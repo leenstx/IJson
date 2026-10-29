@@ -10,10 +10,19 @@ pub(crate) fn search_input_id(tab_id: u64) -> egui::Id {
 }
 
 pub(crate) fn session_cache_path() -> Option<std::path::PathBuf> {
-    let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
     let dir = if cfg!(target_os = "macos") {
+        let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
         home.join("Library/Application Support/IJson")
+    } else if cfg!(target_os = "windows") {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            std::path::PathBuf::from(appdata).join("IJson")
+        } else if let Some(userprofile) = std::env::var_os("USERPROFILE") {
+            std::path::PathBuf::from(userprofile).join("AppData/Roaming/IJson")
+        } else {
+            return None;
+        }
     } else {
+        let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
         home.join(".config/IJson")
     };
     std::fs::create_dir_all(&dir).ok()?;

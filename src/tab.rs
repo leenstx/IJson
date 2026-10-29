@@ -854,7 +854,27 @@ pub(crate) fn stamp_from_system_time(time: std::time::SystemTime) -> Option<Stri
     Some(format_local_stamp(secs))
 }
 
+#[cfg(unix)]
 fn format_local_stamp(secs: i64) -> String {
+    #[repr(C)]
+    struct LibcTm {
+        tm_sec: i32,
+        tm_min: i32,
+        tm_hour: i32,
+        tm_mday: i32,
+        tm_mon: i32,
+        tm_year: i32,
+        tm_wday: i32,
+        tm_yday: i32,
+        tm_isdst: i32,
+        tm_gmtoff: i64,
+        tm_zone: *const i8,
+    }
+
+    extern "C" {
+        fn localtime_r(time: *const i64, result: *mut LibcTm) -> *mut LibcTm;
+    }
+
     unsafe {
         let mut tm = std::mem::zeroed();
         if localtime_r(&secs, &mut tm).is_null() {
@@ -867,21 +887,42 @@ fn format_local_stamp(secs: i64) -> String {
     }
 }
 
-#[repr(C)]
-struct LibcTm {
-    tm_sec: i32,
-    tm_min: i32,
-    tm_hour: i32,
-    tm_mday: i32,
-    tm_mon: i32,
-    tm_year: i32,
-    tm_wday: i32,
-    tm_yday: i32,
-    tm_isdst: i32,
-    tm_gmtoff: i64,
-    tm_zone: *const i8,
+#[cfg(windows)]
+fn format_local_stamp(secs: i64) -> String {
+    #[repr(C)]
+    struct WinTm {
+        tm_sec: i32,
+        tm_min: i32,
+        tm_hour: i32,
+        tm_mday: i32,
+        tm_mon: i32,
+        tm_year: i32,
+        tm_wday: i32,
+        tm_yday: i32,
+        tm_isdst: i32,
+    }
+
+    extern "C" {
+        fn _localtime64_s(result: *mut WinTm, time: *const i64) -> i32;
+    }
+
+    unsafe {
+        let mut tm = std::mem::zeroed();
+        if _localtime64_s(&mut tm, &secs) != 0 {
+            return "00.00:00:00".to_string();
+        }
+        format!(
+            "{:02}.{:02}:{:02}:{:02}",
+            tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec
+        )
+    }
 }
 
-extern "C" {
-    fn localtime_r(time: *const i64, result: *mut LibcTm) -> *mut LibcTm;
+#[cfg(not(any(unix, windows)))]
+fn format_local_stamp(secs: i64) -> String {
+    let day = (secs / 86400) % 31 + 1;
+    let hour = (secs % 86400) / 3600;
+    let min = (secs % 3600) / 60;
+    let sec = secs % 60;
+    format!("{:02}.{:02}:{:02}:{:02}", day, hour, min, sec)
 }
