@@ -1,0 +1,32 @@
+[package]
+name = "json-viewer"
+version = "0.1.0"
+edition = "2021"
+description = "A macOS JSON viewer with format, sort, edit, expand/collapse, and compress features"
+
+[[bin]]
+name = "IJson"
+path = "src/main.rs"
+
+[package.metadata.bundle]
+name = "IJson"
+identifier = "cool.letus.ijson"
+icon = ["assets/IJson.icns"]
+
+[dependencies]
+eframe = "0.31"
+serde_json = { version = "1", features = ["preserve_order"] }
+arboard = "3"
+png = "0.17"
+rfd = "0.15"
+ureq = { version = "2.10", default-features = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "ico"] }
+base64 = "0.22"
+shlex = "2.0"
+similar = "2.7"
+fontdb = { version = "0.23", default-features = false, features = ["fs", "memmap"] }
+ab_glyph = "0.2"
+
+[profile.release]
+opt-level = 2
+lto = true
