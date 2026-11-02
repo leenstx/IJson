@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- frosted light tile -->
+    <radialGradient id="glowCyan" cx="160" cy="900" r="520" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9fd2f5" stop-opacity="0.7"/>
+      <stop offset="1" stop-color="#9fd2f5" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowPink" cx="880" cy="160" r="520" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#c6c9ec" stop-opacity="0.75"/>
+      <stop offset="1" stop-color="#c6c9ec" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="tileCore" cx="512" cy="480" r="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.7" stop-color="#fbfbfe" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#f4f4fa" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- vivid cat gradient: purple -> pink -> orange -> yellow -->
+    <linearGradient id="cat" x1="0" y1="330" x2="0" y2="690" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fffaf3"/>
+      <stop offset="0.6" stop-color="#f6ece0"/>
+      <stop offset="1" stop-color="#e6d8c8"/>
+    </linearGradient>
+    <linearGradient id="point" x1="0" y1="220" x2="0" y2="660" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4c5266"/>
+      <stop offset="1" stop-color="#6b7086"/>
+    </linearGradient>
+    <linearGradient id="badgeText" x1="380" y1="0" x2="644" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0.15" stop-color="#5a6178"/>
+      <stop offset="0.85" stop-color="#4a8fd4"/>
+    </linearGradient>
+    <radialGradient id="iris" cx="0.4" cy="0.35" r="0.7">
+      <stop offset="0" stop-color="#e6f6ff"/>
+      <stop offset="0.5" stop-color="#93cdf3"/>
+      <stop offset="1" stop-color="#4f8fd0"/>
+    </radialGradient>
+
+    <clipPath id="tile">
+      <rect x="100" y="100" width="824" height="824" rx="186"/>
+    </clipPath>
+
+    <!-- cat head: pointed ears + scalloped ragdoll cheek fluff -->
+    <path id="head" d="M512 330 C562 330 602 336 636 350 L690 244 Q702 222 714 246 L726 380 C742 410 750 440 748 470 Q778 488 752 512 Q780 536 748 556 Q770 586 734 598 C700 650 610 680 512 680 C414 680 324 650 290 598 Q254 586 276 556 Q244 536 272 512 Q246 488 276 470 C274 440 282 410 298 380 L310 246 Q322 222 334 244 L388 350 C422 336 462 330 512 330 Z"/>
+    <clipPath id="headClip"><use href="#head"/></clipPath>
+
+    <filter id="tileShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#2a2350" flood-opacity="0.25"/>
+    </filter>
+    <filter id="catShadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="22" stdDeviation="26" flood-color="#5b6a9a" flood-opacity="0.32"/>
+    </filter>
+    <filter id="badgeShadow" x="-30%" y="-50%" width="160%" height="220%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#5a4a9a" flood-opacity="0.22"/>
+    </filter>
+    <filter id="blur24" filterUnits="userSpaceOnUse" x="150" y="150" width="724" height="724">
+      <feGaussianBlur stdDeviation="24"/>
+    </filter>
+    <filter id="blur10" filterUnits="userSpaceOnUse" x="150" y="150" width="724" height="724">
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
+      </defs>
+
+  <!-- tile -->
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="#f3f3f9" filter="url(#tileShadow)"/>
+  <g clip-path="url(#tile)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#glowCyan)"/>
+    <rect x="100" y="100" width="824" height="824" fill="url(#glowPink)"/>
+    <rect x="100" y="100" width="824" height="824" fill="url(#tileCore)"/>
+  </g>
+  <rect x="104" y="104" width="816" height="816" rx="182" fill="none" stroke="#ffffff" stroke-width="8" opacity="0.9"/>
+
+  <!-- glossy cat -->
+  <g filter="url(#catShadow)">
+    <use href="#head" fill="url(#cat)"/>
+  </g>
+  <g clip-path="url(#headClip)">
+    <!-- bottom shade + top-left gloss -->
+    <path d="M256 410 L300 180 L446 334 Q360 350 256 410 Z" fill="url(#point)" filter="url(#blur24)"/>
+    <path d="M768 410 L724 180 L578 334 Q664 350 768 410 Z" fill="url(#point)" filter="url(#blur24)"/>
+    <path d="M322 380 L318 270 L380 346 Z" fill="#c9a4ab" opacity="0.55" filter="url(#blur10)"/>
+    <path d="M702 380 L706 270 L644 346 Z" fill="#c9a4ab" opacity="0.55" filter="url(#blur10)"/>
+    <path d="M512 410 C548 410 566 446 598 470 C640 504 644 560 620 600 C596 640 556 658 512 660 C468 658 428 640 404 600 C380 560 384 504 426 470 C458 446 476 410 512 410 Z" fill="url(#point)" filter="url(#blur24)"/>
+    <path d="M512 340 C536 340 548 396 542 456 L482 456 C476 396 488 340 512 340 Z" fill="#5d6378" opacity="0.55" filter="url(#blur24)"/>
+    <ellipse cx="540" cy="730" rx="300" ry="110" fill="#6d6280" opacity="0.22" filter="url(#blur24)"/>
+    <ellipse cx="470" cy="392" rx="120" ry="44" fill="#ffffff" opacity="0.5" filter="url(#blur24)"/>
+    <ellipse cx="452" cy="384" rx="54" ry="16" fill="#ffffff" opacity="0.55" filter="url(#blur10)" transform="rotate(-8 452 384)"/>
+  </g>
+
+  <!-- blue ragdoll eyes: almond, pale sky blue -->
+  <g stroke="#2b2f3d" stroke-width="4.5" stroke-linejoin="round">
+    <path d="M394 512 Q412 468 446 468 Q482 470 488 504 Q474 542 440 544 Q404 542 394 512 Z" fill="url(#iris)"/>
+    <path d="M630 512 Q612 468 578 468 Q542 470 536 504 Q550 542 584 544 Q620 542 630 512 Z" fill="url(#iris)"/>
+  </g>
+  <ellipse cx="443" cy="507" rx="18" ry="23" fill="#1c2030"/>
+  <ellipse cx="581" cy="507" rx="18" ry="23" fill="#1c2030"/>
+  <circle cx="456" cy="490" r="8" fill="#ffffff"/>
+  <circle cx="594" cy="490" r="8" fill="#ffffff"/>
+  <circle cx="430" cy="524" r="3.5" fill="#ffffff" opacity="0.85"/>
+  <circle cx="568" cy="524" r="3.5" fill="#ffffff" opacity="0.85"/>
+
+  <!-- nose + mouth -->
+  <path d="M498 566 Q512 560 526 566 Q527 574 517 582 Q512 587 507 582 Q497 574 498 566 Z" fill="#2f3342"/>
+  <path d="M512 586 L512 596 M512 596 Q503 608 492 602 M512 596 Q521 608 532 602" fill="none" stroke="#2f3342" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- { JSON } badge -->
+  <g filter="url(#badgeShadow)">
+    <rect x="336" y="712" width="352" height="112" rx="56" fill="#ffffff"/>
+  </g>
+  <rect x="336" y="712" width="352" height="112" rx="56" fill="none" stroke="#ece9f6" stroke-width="3"/>
+  <text x="512" y="790" text-anchor="middle" font-family="SF Pro Rounded, -apple-system, Helvetica Neue, Arial, sans-serif" font-weight="800" font-size="58" letter-spacing="3" fill="url(#badgeText)">JSON</text>
+</svg>
