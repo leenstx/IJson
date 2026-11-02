@@ -114,6 +114,7 @@ impl Language {
             "Same JSON · formatting / key order differs" => "JSON 内容相同 · 格式或键名顺序不同",
             "Text differences" => "文本差异",
             "invalid or incomplete JSON" => "JSON 无效或不完整",
+            "Fix the syntax error in the left editor to restore the tree view." => "在左侧编辑区修复语法错误后将自动展示节点树",
             "Light · click for Dark" => "日间模式 · 点击切换夜间",
             "Dark · click for System" => "夜间模式 · 点击跟随系统",
             "System · click for Light" => "跟随系统 · 点击切换日间",

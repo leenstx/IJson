@@ -144,7 +144,7 @@ pub(crate) fn highlight_json(
 
         // Folded block chip: [...] or {...}
         if (b == b'[' || b == b'{')
-            && (text[i..].starts_with("[...]") || text[i..].starts_with("{...}"))
+            && (bytes[i..].starts_with(b"[...]") || bytes[i..].starts_with(b"{...}"))
         {
             add_sec(
                 &mut sections,

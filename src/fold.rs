@@ -345,13 +345,29 @@ fn outermost_collapsed<'a>(
         .max_by_key(|span| span.end_line)
 }
 
+fn safe_slice_prefix(s: &str, byte_idx: usize) -> &str {
+    let mut idx = byte_idx.min(s.len());
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    &s[..idx]
+}
+
+fn safe_slice_suffix(s: &str, byte_idx: usize) -> &str {
+    let mut idx = byte_idx.min(s.len());
+    while idx < s.len() && !s.is_char_boundary(idx) {
+        idx += 1;
+    }
+    &s[idx..]
+}
+
 fn synthetic_line(lines: &[String], span: &FoldSpan) -> String {
     let start = lines.get(span.start_line).map(String::as_str).unwrap_or("");
     let end = lines.get(span.end_line).map(String::as_str).unwrap_or("");
-    let prefix = &start[..span.open_col.min(start.len())];
+    let prefix = safe_slice_prefix(start, span.open_col);
     let close = if span.open == '{' { '}' } else { ']' };
-    let suffix_at = (span.close_col + close.len_utf8()).min(end.len());
-    let suffix = &end[suffix_at..];
+    let suffix_at = span.close_col + close.len_utf8();
+    let suffix = safe_slice_suffix(end, suffix_at);
     format!("{prefix}{}{PLACEHOLDER}{close}{suffix}", span.open)
 }
 
@@ -384,6 +400,9 @@ fn update_folded_boundaries(
 fn split_marker(line: &str, open: char) -> Option<(String, String)> {
     let token = if open == '[' { "[...]" } else { "{...}" };
     let at = find_unquoted(line, token)?;
+    if !line.is_char_boundary(at) || !line.is_char_boundary(at + token.len()) {
+        return None;
+    }
     Some((line[..at].to_string(), line[at + token.len()..].to_string()))
 }
 
@@ -392,28 +411,30 @@ fn line_has_marker(line: &str) -> bool {
 }
 
 fn find_unquoted(line: &str, token: &str) -> Option<usize> {
+    let token_bytes = token.as_bytes();
+    let bytes = line.as_bytes();
     let mut i = 0;
     let mut in_string = false;
     let mut escape = false;
-    let bytes = line.as_bytes();
     while i < bytes.len() {
+        let b = bytes[i];
         if in_string {
             if escape {
                 escape = false;
-            } else if bytes[i] == b'\\' {
+            } else if b == b'\\' {
                 escape = true;
-            } else if bytes[i] == b'"' {
+            } else if b == b'"' {
                 in_string = false;
             }
             i += 1;
             continue;
         }
-        if bytes[i] == b'"' {
+        if b == b'"' {
             in_string = true;
             i += 1;
             continue;
         }
-        if line[i..].starts_with(token) {
+        if bytes[i..].starts_with(token_bytes) && line.is_char_boundary(i) {
             return Some(i);
         }
         i += 1;

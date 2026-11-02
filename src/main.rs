@@ -18,6 +18,13 @@ mod widgets;
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
+    std::panic::set_hook(Box::new(|info| {
+        let backtrace = std::backtrace::Backtrace::capture();
+        let msg = format!("PANIC: {info}\nBacktrace:\n{backtrace:?}");
+        eprintln!("{msg}");
+        let _ = std::fs::write("/tmp/ijson_panic.log", &msg);
+    }));
+
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1150.0, 750.0])
         .with_min_inner_size([650.0, 420.0])

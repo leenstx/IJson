@@ -12,7 +12,7 @@ use crate::highlight::highlight_json;
 use crate::icons::{draw_lucide_icon, LucideIcon};
 use crate::model::{
     collect_all_expandable_paths, is_request_candidate, try_request_json, try_unescape_json,
-    SortMode, TreeAction, ValueTypeTag,
+    ParseError, SortMode, TreeAction, ValueTypeTag,
 };
 use crate::tab::{
     local_stamp_now, stamp_from_system_time, tab_from_value, unique_tab_name, JsonTab,
@@ -305,12 +305,27 @@ impl JsonViewerApp {
         self.surrender_focus(ctx, previous);
         let id = self.alloc_id();
         let name = unique_tab_name(&self.tabs, &local_stamp_now());
-        let tab = JsonTab::empty(id, name);
+        let mut tab = JsonTab::empty(id, name);
+
+        let clipboard_text = arboard::Clipboard::new()
+            .ok()
+            .and_then(|mut cb| cb.get_text().ok())
+            .filter(|text| !text.trim().is_empty());
+
+        if let Some(text) = clipboard_text {
+            if is_request_candidate(&text) {
+                tab.start_request_loading(text, false, ctx);
+            } else {
+                tab.replace_document(text);
+            }
+        }
+
         // New tabs are inserted at the top so they are visible immediately.
         self.tabs.insert(0, tab);
         self.active = 0;
         self.reveal_active = true;
         self.cache_dirty = true;
+        ctx.request_repaint();
     }
 
     fn add_comparison_tab(&mut self, ctx: &egui::Context) {
@@ -2116,36 +2131,6 @@ impl JsonTab {
             .inner_margin(egui::Margin::symmetric(8, 0));
 
         card_frame.show(ui, |ui| {
-            // Syntax Error Card (placed inside card to preserve card top alignment)
-            if let Some(err) = &self.parse_error {
-                if !self.input.trim().is_empty() {
-                    let err_frame = egui::Frame::default()
-                        .fill(p.danger_bg)
-                        .stroke(egui::Stroke::new(
-                            1.0,
-                            p.danger_border,
-                        ))
-                        .corner_radius(egui::CornerRadius::same(6))
-                        .inner_margin(egui::Margin::symmetric(8, 4));
-
-                    err_frame.show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "⚠ {} (Line {}, Col {}): {}",
-                                    tr(ui.ctx(), "Syntax Error"),
-                                    err.line, err.column, err.message
-                                ))
-                                .color(p.danger)
-                                .small()
-                                .strong(),
-                            );
-                        });
-                    });
-                    ui.add_space(4.0);
-                }
-            }
-
             // Digits follow the source, so folding does not make the gutter jump.
             let source_line_count = self.input.split('\n').count().max(1);
             let digits = source_line_count.to_string().len().max(2);
@@ -2635,8 +2620,8 @@ impl JsonTab {
                                     .color(p.strong),
                             );
                             ui.add_space(2.0);
-                            let target = if loading.target_url.len() > 34 {
-                                format!("{}...", &loading.target_url[..31])
+                            let target = if loading.target_url.chars().count() > 34 {
+                                format!("{}...", loading.target_url.chars().take(31).collect::<String>())
                             } else {
                                 loading.target_url.clone()
                             };
@@ -2693,6 +2678,111 @@ impl JsonTab {
 }
 
 impl JsonViewerApp {
+    fn render_tree_syntax_error(&self, ui: &mut egui::Ui, err: &ParseError, colors: ThemeColors) {
+        let p = colors.ui;
+        ui.add_space(10.0);
+
+        ui.vertical(|ui| {
+            ui.set_width(ui.available_width());
+
+            // 1. Header: Left-aligned Icon + Title + Location Badge
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+
+                // Subtle Warning Icon
+                ui.label(
+                    egui::RichText::new("⚠")
+                        .size(14.0)
+                        .strong()
+                        .color(p.danger),
+                );
+
+                // Title
+                ui.label(
+                    egui::RichText::new(tr(ui.ctx(), "Syntax Error"))
+                        .size(13.0)
+                        .strong()
+                        .color(p.strong),
+                );
+
+                // Location Pill Badge: Ln X, Col Y
+                let pill_frame = egui::Frame::default()
+                    .fill(p.subtle)
+                    .stroke(egui::Stroke::new(1.0, p.danger_border))
+                    .corner_radius(egui::CornerRadius::same(4))
+                    .inner_margin(egui::Margin::symmetric(7, 2));
+
+                pill_frame.show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("Ln {}, Col {}", err.line, err.column))
+                            .size(11.0)
+                            .monospace()
+                            .color(p.danger),
+                    );
+                });
+            });
+
+            ui.add_space(8.0);
+
+            // 2. Error Message Box (subtle background, clean border, no red fill)
+            let msg_frame = egui::Frame::default()
+                .fill(p.subtle)
+                .stroke(egui::Stroke::new(1.0, p.border))
+                .corner_radius(egui::CornerRadius::same(6))
+                .inner_margin(egui::Margin::symmetric(10, 8));
+
+            msg_frame.show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(&err.message)
+                            .size(12.0)
+                            .monospace()
+                            .color(p.strong),
+                    );
+                });
+            });
+
+            // 3. Code context snippet preview
+            if let Some(snippet) = extract_snippet(&self.input, err.line, err.column) {
+                ui.add_space(8.0);
+                let snippet_frame = egui::Frame::default()
+                    .fill(p.subtle)
+                    .stroke(egui::Stroke::new(1.0, p.border))
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .inner_margin(egui::Margin::symmetric(10, 8));
+
+                snippet_frame.show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(
+                        egui::RichText::new(snippet)
+                            .size(11.5)
+                            .monospace()
+                            .line_height(Some(16.0))
+                            .color(p.text),
+                    );
+                });
+            }
+
+            ui.add_space(8.0);
+
+            // 4. Subtle Hint Footer
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "💡 {}",
+                        tr(
+                            ui.ctx(),
+                            "Fix the syntax error in the left editor to restore the tree view."
+                        )
+                    ))
+                    .size(11.0)
+                    .color(p.faint),
+                );
+            });
+        });
+    }
+
     fn render_tree_card(&mut self, ui: &mut egui::Ui, card_rect: egui::Rect, colors: ThemeColors) {
         let p = colors.ui;
         ui.set_clip_rect(ui.clip_rect().intersect(card_rect));
@@ -2701,6 +2791,14 @@ impl JsonViewerApp {
             .inner_margin(egui::Margin::symmetric(8, 0));
 
         card_frame.show(ui, |ui| {
+            if let Some(err) = &self.parse_error {
+                if !self.input.trim().is_empty() {
+                    self.render_tree_syntax_error(ui, err, colors);
+                    ui.allocate_space(ui.available_size());
+                    return;
+                }
+            }
+
             if self.parsed.is_none() {
                 // Empty data: no text prompts, allocate full space to stretch top-to-bottom
                 ui.allocate_space(ui.available_size());
@@ -2712,11 +2810,7 @@ impl JsonViewerApp {
             let parsed = self.parsed.clone().unwrap();
             let search_query = self.search_query.clone();
             let search_matches = self.search_matches.clone();
-            let cur_match_path = if !self.search_matches.is_empty() {
-                Some(self.search_matches[self.search_index].clone())
-            } else {
-                None
-            };
+            let cur_match_path = self.search_matches.get(self.search_index).cloned();
             let selected_path = self.selected_path.clone();
             let reveal_match = self.reveal_search_match;
             if reveal_match {
@@ -3273,4 +3367,50 @@ fn tab_row(
         }
     });
     resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+}
+
+fn extract_snippet(input: &str, err_line: usize, err_col: usize) -> Option<String> {
+    if err_line == 0 {
+        return None;
+    }
+    let lines: Vec<&str> = input.lines().collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let target_idx = err_line.saturating_sub(1);
+    if target_idx >= lines.len() {
+        return None;
+    }
+
+    let start_idx = target_idx.saturating_sub(1);
+    let end_idx = (target_idx + 1).min(lines.len() - 1);
+    let width = (end_idx + 1).to_string().len().max(2);
+
+    let mut out = String::new();
+    for i in start_idx..=end_idx {
+        let is_err = i == target_idx;
+        let mark = if is_err { ">" } else { " " };
+        let line_content = lines[i];
+        out.push_str(&format!("{mark} {:>width$} | {line_content}\n", i + 1));
+        if is_err {
+            let col_offset = err_col.saturating_sub(1);
+            let leading_chars = line_content.chars().take(col_offset);
+            let mut indent_len = 0;
+            for ch in leading_chars {
+                if ch == '\t' {
+                    indent_len += 4;
+                } else if ch.is_ascii() {
+                    indent_len += 1;
+                } else {
+                    indent_len += 2;
+                }
+            }
+            let pointer_indent = " ".repeat(width + 4 + indent_len);
+            out.push_str(&format!("{pointer_indent}^\n"));
+        }
+    }
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    Some(out)
 }
