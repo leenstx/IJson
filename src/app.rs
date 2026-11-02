@@ -3057,7 +3057,7 @@ impl JsonViewerApp {
                 }
             }
 
-            // Clean hint badge at top-right of tree view card
+            // Transient copy confirmation badge at top-right of tree view card (no permanent hint)
             let now = std::time::Instant::now();
             let is_active_notice = self
                 .copy_notice
@@ -3069,51 +3069,40 @@ impl JsonViewerApp {
             }
             if is_active_notice {
                 ui.ctx().request_repaint();
+                if let Some((msg, _)) = &self.copy_notice {
+                    let green = if ui.visuals().dark_mode {
+                        egui::Color32::from_rgb(74, 222, 128)
+                    } else {
+                        egui::Color32::from_rgb(22, 163, 74)
+                    };
+                    let badge_text = format!("✓ {}", msg);
+                    let badge_font = egui::FontId::proportional(11.0);
+                    let galley = ui.fonts(|f| f.layout_no_wrap(badge_text, badge_font, green));
+                    let badge_size = egui::vec2(galley.rect.width() + 16.0, 20.0);
+                    let badge_pos = egui::pos2(
+                        card_rect.right() - badge_size.x - 10.0,
+                        card_rect.top() + 6.0,
+                    );
+                    let badge_rect = egui::Rect::from_min_size(badge_pos, badge_size);
+
+                    ui.painter()
+                        .rect_filled(badge_rect, egui::CornerRadius::same(10), p.surface);
+                    ui.painter().rect_stroke(
+                        badge_rect,
+                        egui::CornerRadius::same(10),
+                        egui::Stroke::new(1.0, green),
+                        egui::StrokeKind::Inside,
+                    );
+                    ui.painter().galley(
+                        egui::pos2(
+                            badge_rect.left() + 8.0,
+                            badge_rect.center().y - galley.rect.height() * 0.5,
+                        ),
+                        galley,
+                        green,
+                    );
+                }
             }
-
-            let (badge_text, text_color, border_color, bg_color) = if let Some((msg, _)) = &self.copy_notice {
-                let green = if ui.visuals().dark_mode {
-                    egui::Color32::from_rgb(74, 222, 128)
-                } else {
-                    egui::Color32::from_rgb(22, 163, 74)
-                };
-                (format!("✓ {}", msg), green, green, p.surface)
-            } else {
-                (
-                    tr(ui.ctx(), "Click value · Double-click key to copy").to_string(),
-                    p.muted,
-                    p.border,
-                    p.subtle,
-                )
-            };
-
-            let badge_font = egui::FontId::proportional(11.0);
-            let galley = ui.fonts(|f| f.layout_no_wrap(badge_text, badge_font, text_color));
-            let badge_size = egui::vec2(galley.rect.width() + 16.0, 20.0);
-            let badge_pos = egui::pos2(card_rect.right() - badge_size.x - 10.0, card_rect.top() + 6.0);
-            let badge_rect = egui::Rect::from_min_size(badge_pos, badge_size);
-
-            ui.painter().rect_filled(badge_rect, egui::CornerRadius::same(10), bg_color);
-            ui.painter().rect_stroke(
-                badge_rect,
-                egui::CornerRadius::same(10),
-                egui::Stroke::new(1.0, border_color),
-                egui::StrokeKind::Inside,
-            );
-            ui.painter().galley(
-                egui::pos2(
-                    badge_rect.left() + 8.0,
-                    badge_rect.center().y - galley.rect.height() * 0.5,
-                ),
-                galley,
-                text_color,
-            );
-
-            let hint_resp = ui.allocate_rect(badge_rect, egui::Sense::hover());
-            hint_resp.on_hover_text(tr(
-                ui.ctx(),
-                "Object/Array: Click to toggle\nLeaf: Click to copy value, double-click to copy key",
-            ));
         });
     }
 }

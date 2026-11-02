@@ -337,17 +337,37 @@ pub(crate) fn render_tree_node(
 
             show_tree_context_menu(&resp, value, path, key_label, false, action);
 
-            // Double click to copy key, single click to copy value
+            let is_cmd =
+                ui.input(|i| i.modifiers.command || i.modifiers.mac_cmd || i.modifiers.ctrl);
+
+            // Interaction mapping:
+            // - Double click: copy value
+            // - Command + click: copy key
+            // - Command + double click: edit value
+            // - Normal click: select node
             if resp.double_clicked() {
-                if let Some(k) = key_label {
-                    *action = Some(TreeAction::CopyKey(path.to_string(), k.to_string()));
+                if is_cmd {
+                    let k_label = key_label.unwrap_or("").to_string();
+                    *action = Some(TreeAction::StartEdit(
+                        path.to_string(),
+                        k_label,
+                        value.clone(),
+                    ));
+                } else {
+                    let val_str = match value {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    *action = Some(TreeAction::CopyValue(path.to_string(), val_str));
                 }
             } else if resp.clicked() {
-                let val_str = match value {
-                    Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                *action = Some(TreeAction::CopyValue(path.to_string(), val_str));
+                if is_cmd {
+                    if let Some(k) = key_label {
+                        *action = Some(TreeAction::CopyKey(path.to_string(), k.to_string()));
+                    }
+                } else {
+                    *action = Some(TreeAction::Select(path.to_string()));
+                }
             }
 
             if let Value::String(s) = value {
