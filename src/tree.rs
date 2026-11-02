@@ -71,10 +71,6 @@ pub(crate) fn render_tree_node(
 
             show_tree_context_menu(&resp, value, path, key_label, true, action);
 
-            if resp.clicked() {
-                *action = Some(TreeAction::Select(path.to_string()));
-            }
-
             // Render row content. Labels are non-interactive so right-click hits this row.
             let mut ui_row = ui.new_child(
                 egui::UiBuilder::default()
@@ -101,12 +97,15 @@ pub(crate) fn render_tree_node(
             let icon_rect =
                 egui::Rect::from_center_size(chev_rect.center(), egui::vec2(12.0, 12.0));
             draw_lucide_icon(ui_row.painter(), icon_rect, chev_icon, chevron_color);
-            if chev_resp.clicked() {
+
+            // Click node or chevron to expand/collapse
+            if resp.clicked() || chev_resp.clicked() {
                 if is_collapsed {
                     collapsed.remove(path);
                 } else {
                     collapsed.insert(path.to_string());
                 }
+                *action = Some(TreeAction::Select(path.to_string()));
             }
 
             if let Some(k) = key_label {
@@ -206,10 +205,6 @@ pub(crate) fn render_tree_node(
 
             show_tree_context_menu(&resp, value, path, key_label, true, action);
 
-            if resp.clicked() {
-                *action = Some(TreeAction::Select(path.to_string()));
-            }
-
             let mut ui_row = ui.new_child(
                 egui::UiBuilder::default()
                     .max_rect(rect)
@@ -235,12 +230,15 @@ pub(crate) fn render_tree_node(
             let icon_rect =
                 egui::Rect::from_center_size(chev_rect.center(), egui::vec2(12.0, 12.0));
             draw_lucide_icon(ui_row.painter(), icon_rect, chev_icon, chevron_color);
-            if chev_resp.clicked() {
+
+            // Click node or chevron to expand/collapse
+            if resp.clicked() || chev_resp.clicked() {
                 if is_collapsed {
                     collapsed.remove(path);
                 } else {
                     collapsed.insert(path.to_string());
                 }
+                *action = Some(TreeAction::Select(path.to_string()));
             }
 
             if let Some(k) = key_label {
@@ -339,18 +337,17 @@ pub(crate) fn render_tree_node(
 
             show_tree_context_menu(&resp, value, path, key_label, false, action);
 
-            if resp.clicked() {
-                *action = Some(TreeAction::Select(path.to_string()));
-            }
-
-            // Double click to edit value
+            // Double click to copy key, single click to copy value
             if resp.double_clicked() {
-                let k_label = key_label.unwrap_or("").to_string();
-                *action = Some(TreeAction::StartEdit(
-                    path.to_string(),
-                    k_label,
-                    value.clone(),
-                ));
+                if let Some(k) = key_label {
+                    *action = Some(TreeAction::CopyKey(path.to_string(), k.to_string()));
+                }
+            } else if resp.clicked() {
+                let val_str = match value {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                *action = Some(TreeAction::CopyValue(path.to_string(), val_str));
             }
 
             if let Value::String(s) = value {

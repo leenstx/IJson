@@ -3017,6 +3017,28 @@ impl JsonViewerApp {
                             let _ = cb.set_text(txt);
                         }
                     }
+                    TreeAction::CopyValue(path, val) => {
+                        self.selected_path = Some(path);
+                        if let Ok(mut cb) = arboard::Clipboard::new() {
+                            let _ = cb.set_text(&val);
+                        }
+                        self.copy_notice = Some((
+                            tr(ui.ctx(), "Copied value").to_string(),
+                            std::time::Instant::now(),
+                        ));
+                        ui.ctx().request_repaint();
+                    }
+                    TreeAction::CopyKey(path, key) => {
+                        self.selected_path = Some(path);
+                        if let Ok(mut cb) = arboard::Clipboard::new() {
+                            let _ = cb.set_text(&key);
+                        }
+                        self.copy_notice = Some((
+                            tr(ui.ctx(), "Copied key").to_string(),
+                            std::time::Instant::now(),
+                        ));
+                        ui.ctx().request_repaint();
+                    }
                     TreeAction::StartEdit(path, key, val) => {
                         self.open_edit_modal(&path, &key, &val);
                     }
@@ -3034,6 +3056,64 @@ impl JsonViewerApp {
                     }
                 }
             }
+
+            // Clean hint badge at top-right of tree view card
+            let now = std::time::Instant::now();
+            let is_active_notice = self
+                .copy_notice
+                .as_ref()
+                .is_some_and(|(_, t)| now.duration_since(*t).as_secs_f32() < 1.5);
+
+            if !is_active_notice && self.copy_notice.is_some() {
+                self.copy_notice = None;
+            }
+            if is_active_notice {
+                ui.ctx().request_repaint();
+            }
+
+            let (badge_text, text_color, border_color, bg_color) = if let Some((msg, _)) = &self.copy_notice {
+                let green = if ui.visuals().dark_mode {
+                    egui::Color32::from_rgb(74, 222, 128)
+                } else {
+                    egui::Color32::from_rgb(22, 163, 74)
+                };
+                (format!("✓ {}", msg), green, green, p.surface)
+            } else {
+                (
+                    tr(ui.ctx(), "Click value · Double-click key to copy").to_string(),
+                    p.muted,
+                    p.border,
+                    p.subtle,
+                )
+            };
+
+            let badge_font = egui::FontId::proportional(11.0);
+            let galley = ui.fonts(|f| f.layout_no_wrap(badge_text, badge_font, text_color));
+            let badge_size = egui::vec2(galley.rect.width() + 16.0, 20.0);
+            let badge_pos = egui::pos2(card_rect.right() - badge_size.x - 10.0, card_rect.top() + 6.0);
+            let badge_rect = egui::Rect::from_min_size(badge_pos, badge_size);
+
+            ui.painter().rect_filled(badge_rect, egui::CornerRadius::same(10), bg_color);
+            ui.painter().rect_stroke(
+                badge_rect,
+                egui::CornerRadius::same(10),
+                egui::Stroke::new(1.0, border_color),
+                egui::StrokeKind::Inside,
+            );
+            ui.painter().galley(
+                egui::pos2(
+                    badge_rect.left() + 8.0,
+                    badge_rect.center().y - galley.rect.height() * 0.5,
+                ),
+                galley,
+                text_color,
+            );
+
+            let hint_resp = ui.allocate_rect(badge_rect, egui::Sense::hover());
+            hint_resp.on_hover_text(tr(
+                ui.ctx(),
+                "Object/Array: Click to toggle\nLeaf: Click to copy value, double-click to copy key",
+            ));
         });
     }
 }

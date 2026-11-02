@@ -35,6 +35,8 @@ pub(crate) enum ValueTypeTag {
 pub(crate) enum TreeAction {
     Select(String),
     CopyText(String),
+    CopyValue(String, String),
+    CopyKey(String, String),
     StartEdit(String, String, Value),
     DeleteNode(String),
     ExpandSubtree(String),

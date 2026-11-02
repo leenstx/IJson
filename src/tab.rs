@@ -70,6 +70,7 @@ pub(crate) struct JsonTab {
     pub(crate) editor_spans: Vec<FoldSpan>,
     pub(crate) editor_folds: HashSet<usize>,
     pub(crate) request_loading: Option<RequestLoadingState>,
+    pub(crate) copy_notice: Option<(String, std::time::Instant)>,
 
     undo_past: Vec<String>,
     undo_future: Vec<String>,
@@ -119,6 +120,7 @@ impl JsonTab {
             editor_spans: Vec::new(),
             editor_folds: HashSet::new(),
             request_loading: None,
+            copy_notice: None,
             undo_past: Vec::new(),
             undo_future: Vec::new(),
             undo_pending: None,

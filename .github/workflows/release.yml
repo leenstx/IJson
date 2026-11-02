@@ -33,14 +33,59 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cargo-bundle & create-dmg
+      - name: Install create-dmg
         run: |
-          cargo install cargo-bundle
           brew install create-dmg || true
 
-      - name: Build macOS App Bundle
+      - name: Build macOS Binary
         run: |
-          cargo bundle --release --target ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Create macOS App Bundle
+        run: |
+          TARGET_DIR="target/${{ matrix.target }}/release"
+          APP_PATH="$TARGET_DIR/bundle/osx/IJson.app"
+          CONTENTS="$APP_PATH/Contents"
+
+          mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
+          cp "$TARGET_DIR/IJson" "$CONTENTS/MacOS/IJson"
+          chmod +x "$CONTENTS/MacOS/IJson"
+          cp assets/IJson.icns "$CONTENTS/Resources/IJson.icns"
+
+          cat << 'EOF' > "$CONTENTS/Info.plist"
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key>
+            <string>en</string>
+            <key>CFBundleDisplayName</key>
+            <string>IJson</string>
+            <key>CFBundleExecutable</key>
+            <string>IJson</string>
+            <key>CFBundleIconFile</key>
+            <string>IJson.icns</string>
+            <key>CFBundleIdentifier</key>
+            <string>cool.letus.ijson</string>
+            <key>CFBundleInfoDictionaryVersion</key>
+            <string>6.0</string>
+            <key>CFBundleName</key>
+            <string>IJson</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>0.1.0</string>
+            <key>CFBundleVersion</key>
+            <string>0.1.0</string>
+            <key>CSResourcesFileMapped</key>
+            <true/>
+            <key>LSRequiresCarbon</key>
+            <true/>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
 
       - name: Package DMG and Zip
         run: |
