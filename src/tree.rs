@@ -30,12 +30,56 @@ pub(crate) fn render_tree_node(
     let base_x = ui.cursor().min.x;
     let indent = depth as f32 * indent_step;
 
-    let is_search_match = !search_query.is_empty() && search_matches.iter().any(|m| m == path);
     let is_current_match = cur_match_path == Some(path);
     let is_selected = selected_path == Some(path);
 
     let row_height = 25.0;
     let available_w = ui.available_width();
+
+    // Rows outside the viewport only reserve their space, so big documents stay fast.
+    let row_top = ui.cursor().min.y;
+    let clip = ui.clip_rect();
+    let off_screen = row_top > clip.bottom() || row_top + row_height < clip.top();
+    if off_screen && cur_match_path != Some(path) {
+        ui.allocate_space(egui::vec2(available_w, row_height));
+        if collapsed.contains(path) {
+            return;
+        }
+        let mut child = |ui: &mut egui::Ui, v: &Value, child_path: &str, label: &str| {
+            render_tree_node(
+                ui,
+                v,
+                child_path,
+                Some(label),
+                depth + 1,
+                collapsed,
+                search_query,
+                search_matches,
+                cur_match_path,
+                selected_path,
+                colors,
+                action,
+                max_row_w,
+                current_match_rect,
+            );
+        };
+        match value {
+            Value::Object(map) => {
+                for (k, v) in map {
+                    child(ui, v, &format!("{}.{}", path, k), k);
+                }
+            }
+            Value::Array(arr) => {
+                for (i, v) in arr.iter().enumerate() {
+                    child(ui, v, &format!("{}[{}]", path, i), &format!("[{}]", i));
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    let is_search_match = !search_query.is_empty() && search_matches.iter().any(|m| m == path);
 
     match value {
         Value::Object(map) => {

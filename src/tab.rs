@@ -20,6 +20,17 @@ pub(crate) struct RequestLoadingState {
     pub(crate) receiver: std::sync::mpsc::Receiver<Result<String, String>>,
 }
 
+/// Key and result of the last editor layout. Laying out a large document is
+/// expensive, so it is redone only when one of these inputs changes.
+pub(crate) struct EditorGalleyCache {
+    pub(crate) text: String,
+    pub(crate) colors: crate::theme::ThemeColors,
+    pub(crate) line_height: f32,
+    pub(crate) glyph_width: f32,
+    pub(crate) pixels_per_point: f32,
+    pub(crate) galley: std::sync::Arc<eframe::egui::Galley>,
+}
+
 pub(crate) struct JsonTab {
     pub(crate) id: u64,
     pub(crate) name: String,
@@ -69,6 +80,10 @@ pub(crate) struct JsonTab {
     pub(crate) editor_map: Vec<ViewLine>,
     pub(crate) editor_spans: Vec<FoldSpan>,
     pub(crate) editor_folds: HashSet<usize>,
+    /// Source lines where a foldable block starts (from `editor_spans`).
+    pub(crate) editor_fold_starts: HashSet<usize>,
+    /// Highlighted editor layout, reused while the text and style are unchanged.
+    pub(crate) editor_galley_cache: Option<EditorGalleyCache>,
     pub(crate) request_loading: Option<RequestLoadingState>,
     pub(crate) copy_notice: Option<(String, std::time::Instant)>,
 
@@ -119,6 +134,8 @@ impl JsonTab {
             editor_map: Vec::new(),
             editor_spans: Vec::new(),
             editor_folds: HashSet::new(),
+            editor_fold_starts: HashSet::new(),
+            editor_galley_cache: None,
             request_loading: None,
             copy_notice: None,
             undo_past: Vec::new(),
@@ -297,11 +314,9 @@ impl JsonTab {
     pub(crate) fn rebuild_editor_view(&mut self) {
         let (view, map, spans) = build_view(&self.input, &self.editor_folds);
         self.editor_spans = spans;
-        self.editor_folds.retain(|start| {
-            self.editor_spans
-                .iter()
-                .any(|span| span.start_line == *start)
-        });
+        self.editor_fold_starts = self.editor_spans.iter().map(|s| s.start_line).collect();
+        let starts = &self.editor_fold_starts;
+        self.editor_folds.retain(|start| starts.contains(start));
         self.editor_map = map;
         self.editor_view = view.clone();
         self.editor_built = view;

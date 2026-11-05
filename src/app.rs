@@ -15,7 +15,7 @@ use crate::model::{
     ParseError, SortMode, TreeAction, ValueTypeTag,
 };
 use crate::tab::{
-    local_stamp_now, stamp_from_system_time, tab_from_value, unique_tab_name, JsonTab,
+    local_stamp_now, stamp_from_system_time, tab_from_value, unique_tab_name, EditorGalleyCache, JsonTab,
     TAB_RAIL_WIDTH,
 };
 use crate::i18n::{tr, Language};
@@ -2132,7 +2132,7 @@ impl JsonTab {
 
         card_frame.show(ui, |ui| {
             // Digits follow the source, so folding does not make the gutter jump.
-            let source_line_count = self.input.split('\n').count().max(1);
+            let source_line_count = self.editor_map.last().map_or(1, |l| l.source_end + 1);
             let digits = source_line_count.to_string().len().max(2);
             let fold_w = 16.0;
 
@@ -2143,41 +2143,57 @@ impl JsonTab {
             let font_id = egui::FontId::monospace(13.0);
             let line_height_val = editor_row_height(ui, &font_id, requested_line_h);
 
+            let digit_w = ui.fonts(|f| f.glyph_width(&font_id, '0')).max(7.2);
+
             let measured_content_w = std::rc::Rc::new(std::cell::Cell::new(None));
             let last_galley = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let galley_cache =
+                std::rc::Rc::new(std::cell::RefCell::new(self.editor_galley_cache.take()));
             let mcw = measured_content_w.clone();
             let lg = last_galley.clone();
+            let gc = galley_cache.clone();
             let layout_font_id = font_id.clone();
+            let glyph_width = digit_w;
             let mut code_layouter = move |ui: &egui::Ui, text: &str, _wrap_width: f32| {
-                let job = highlight_json(text, layout_font_id.clone(), line_height_val, colors);
-                let galley = ui.fonts(|f| f.layout_job(job));
+                // TextEdit calls this every frame; re-highlighting a large document each
+                // time is what made big pastes freeze, so reuse the last layout.
+                let pixels_per_point = ui.ctx().pixels_per_point();
+                let mut cache = gc.borrow_mut();
+                let hit = cache.as_ref().is_some_and(|c: &EditorGalleyCache| {
+                    c.colors == colors
+                        && c.line_height == line_height_val
+                        && c.glyph_width == glyph_width
+                        && c.pixels_per_point == pixels_per_point
+                        && c.text == text
+                });
+                if !hit {
+                    let job = highlight_json(text, layout_font_id.clone(), line_height_val, colors);
+                    *cache = Some(EditorGalleyCache {
+                        text: text.to_owned(),
+                        colors,
+                        line_height: line_height_val,
+                        glyph_width,
+                        pixels_per_point,
+                        galley: ui.fonts(|f| f.layout_job(job)),
+                    });
+                }
+                let galley = cache.as_ref().unwrap().galley.clone();
                 mcw.set(Some(galley.rect.width()));
                 *lg.borrow_mut() = Some(galley.clone());
                 galley
             };
 
-            let digit_w = ui.fonts(|f| f.glyph_width(&font_id, '0')).max(7.2);
             let gutter_width = (digits as f32 * digit_w + 12.0).max(28.0);
             let visible_editor_w = (card_rect.width() - gutter_width - fold_w - 22.0).max(100.0);
-            let fold_marks: Vec<Option<usize>> = {
-                let rows = self.editor_map.len().max(1);
-                (0..rows)
-                    .map(|i| {
-                        self.editor_map.get(i).and_then(|line| {
-                            self.editor_spans
-                                .iter()
-                                .any(|span| span.start_line == line.source_start)
-                                .then_some(line.source_start)
-                        })
-                    })
-                    .collect()
-            };
             let folded_now = self.editor_folds.clone();
 
-            // Content width: use measured width if available, with approx fallback for first frame
+            // Content width: use the measured width once known; estimate only on the first
+            // frame, since scanning a large document every frame is slow.
             let approx_char_w = digit_w;
-            let approx_w = self
-                .editor_view
+            let approx_w = if self.editor_content_width > 0.0 {
+                0.0
+            } else {
+                self.editor_view
                 .lines()
                 .map(|l| {
                     let mut w = 0.0;
@@ -2191,7 +2207,8 @@ impl JsonTab {
                     w
                 })
                 .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                .unwrap_or(0.0);
+                .unwrap_or(0.0)
+            };
             let content_w = self.editor_content_width.max(approx_w);
             let max_content_w = if content_w > 0.0 {
                 content_w + 30.0
@@ -2316,76 +2333,91 @@ impl JsonTab {
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
 
+                    // Only rows inside the viewport get fold arrows and line numbers;
+                    // building widgets for every row froze the app on large documents.
+                    let visible_lines = self.editor_map.len().max(1);
+                    let clip = ui.clip_rect();
+                    let row_count = self.editor_map.len();
+                    let visible_rows = move |top: f32| {
+                        let first = ((clip.top() - top) / line_height_val).floor().max(0.0) as usize;
+                        let end = (((clip.bottom() - top) / line_height_val).ceil().max(0.0)
+                            as usize)
+                            .min(row_count);
+                        first..end.max(first)
+                    };
+
                     let mut clicked_fold = None;
-                    let fold_h = fold_marks.len() as f32 * line_height_val;
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(fold_w, fold_h),
-                        egui::Layout::top_down(egui::Align::Center),
-                        |ui| {
-                            ui.spacing_mut().item_spacing.y = 0.0;
-                            for mark in &fold_marks {
-                                let sense = if mark.is_some() {
-                                    egui::Sense::click()
-                                } else {
-                                    egui::Sense::hover()
-                                };
-                                let (rect, resp) = ui.allocate_exact_size(
-                                    egui::vec2(fold_w, line_height_val),
-                                    sense,
-                                );
-                                let Some(start) = mark else {
-                                    continue;
-                                };
-                                let collapsed = folded_now.contains(start);
-                                let color = if resp.hovered() {
-                                    p.strong
-                                } else {
-                                    p.faint
-                                };
-                                draw_fold_chevron(ui.painter(), rect.center(), collapsed, color);
-                                let tip = if collapsed { tr(ui.ctx(), "Expand") } else { tr(ui.ctx(), "Collapse") };
-                                if resp.clicked() {
-                                    clicked_fold = Some(*start);
-                                }
-                                resp.on_hover_text(tip)
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-                            }
-                        },
-                    );
+                    let fold_h = visible_lines as f32 * line_height_val;
+                    let (fold_rect, _) =
+                        ui.allocate_exact_size(egui::vec2(fold_w, fold_h), egui::Sense::hover());
+                    for row in visible_rows(fold_rect.top()) {
+                        let start = self.editor_map[row].source_start;
+                        if !self.editor_fold_starts.contains(&start) {
+                            continue;
+                        }
+                        let rect = egui::Rect::from_min_size(
+                            egui::pos2(fold_rect.left(), fold_rect.top() + row as f32 * line_height_val),
+                            egui::vec2(fold_w, line_height_val),
+                        );
+                        let resp = ui.interact(
+                            rect,
+                            egui::Id::new(("editor_fold", editor_scroll_id, start)),
+                            egui::Sense::click(),
+                        );
+                        let collapsed = folded_now.contains(&start);
+                        let color = if resp.hovered() {
+                            p.strong
+                        } else {
+                            p.faint
+                        };
+                        draw_fold_chevron(ui.painter(), rect.center(), collapsed, color);
+                        let tip = if collapsed { tr(ui.ctx(), "Expand") } else { tr(ui.ctx(), "Collapse") };
+                        if resp.clicked() {
+                            clicked_fold = Some(start);
+                        }
+                        resp.on_hover_text(tip)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    }
                     if let Some(start) = clicked_fold {
                         self.toggle_editor_fold(start);
                     }
 
-                    let visible_lines = self.editor_map.len().max(1);
-                    let mut line_numbers_str = String::with_capacity(visible_lines * 5);
-                    for line in &self.editor_map {
-                        use std::fmt::Write;
-                        let _ = writeln!(
-                            &mut line_numbers_str,
-                            "{:>width$}",
-                            line.source_start + 1,
-                            width = digits
+                    let number_galley = |ui: &egui::Ui, n: usize| {
+                        let mut job = egui::text::LayoutJob::single_section(
+                            format!("{:>width$}", n, width = digits),
+                            egui::TextFormat {
+                                font_id: font_id.clone(),
+                                color: p.muted,
+                                line_height: Some(line_height_val),
+                                ..Default::default()
+                            },
                         );
-                    }
-                    if line_numbers_str.ends_with('\n') {
-                        line_numbers_str.pop();
-                    }
-
+                        job.wrap.max_width = f32::INFINITY;
+                        ui.painter().layout_job(job)
+                    };
+                    // Every number is padded to the same width, so one sample sizes the column.
+                    let numbers_w = number_galley(ui, 1).size().x;
                     let gutter_h = visible_lines as f32 * line_height_val;
                     ui.allocate_ui_with_layout(
                         egui::vec2(gutter_width, gutter_h),
                         egui::Layout::top_down(egui::Align::RIGHT),
                         |ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&line_numbers_str)
-                                        .font(font_id.clone())
-                                        .line_height(Some(line_height_val))
-                                        .color(p.muted),
-                                )
-                                .wrap_mode(egui::TextWrapMode::Extend)
-                                .selectable(false),
+                            let (rect, _) = ui.allocate_exact_size(
+                                egui::vec2(numbers_w, gutter_h),
+                                egui::Sense::hover(),
                             );
+                            for row in visible_rows(rect.top()) {
+                                // A fold toggled above can shorten the map this frame.
+                                let Some(line) = self.editor_map.get(row) else {
+                                    break;
+                                };
+                                let galley = number_galley(ui, line.source_start + 1);
+                                let pos = egui::pos2(
+                                    rect.right() - galley.size().x,
+                                    rect.top() + row as f32 * line_height_val,
+                                );
+                                ui.painter().galley(pos, galley, p.muted);
+                            }
                         },
                     );
 
@@ -2524,6 +2556,7 @@ impl JsonTab {
             if let Some(w) = measured_content_w.get() {
                 self.editor_content_width = w;
             }
+            self.editor_galley_cache = galley_cache.borrow_mut().take();
 
             if text_exceeds_width {
                 ui.add_space(2.0);
@@ -2807,7 +2840,8 @@ impl JsonViewerApp {
 
             let mut action: Option<TreeAction> = None;
 
-            let parsed = self.parsed.clone().unwrap();
+            // Borrow the document for this frame instead of deep-cloning it.
+            let parsed = self.parsed.take().unwrap();
             let search_query = self.search_query.clone();
             let search_matches = self.search_matches.clone();
             let cur_match_path = self.search_matches.get(self.search_index).cloned();
@@ -2947,6 +2981,7 @@ impl JsonViewerApp {
                     }
                 });
 
+            self.parsed = Some(parsed);
             self.tree_content_width = max_row_w;
 
             if text_exceeds_width {

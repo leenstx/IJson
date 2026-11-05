@@ -55,7 +55,7 @@ impl ThemeMode {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) struct UiColors {
     pub(crate) titlebar: egui::Color32,
     pub(crate) canvas: egui::Color32,
@@ -200,7 +200,7 @@ pub(crate) fn setup_theme(ctx: &egui::Context) {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) struct ThemeColors {
     pub(crate) key: egui::Color32,
     pub(crate) string: egui::Color32,

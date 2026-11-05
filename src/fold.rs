@@ -106,9 +106,20 @@ pub(crate) fn build_view(
     let lines = split_lines(source);
     let mut out_lines = Vec::new();
     let mut view = Vec::new();
+    // Outermost collapsed span per start line, built once instead of scanning per line.
+    let mut collapsed_at: std::collections::HashMap<usize, &FoldSpan> =
+        std::collections::HashMap::new();
+    if !collapsed.is_empty() {
+        for span in spans.iter().filter(|s| collapsed.contains(&s.start_line)) {
+            let entry = collapsed_at.entry(span.start_line).or_insert(span);
+            if span.end_line > entry.end_line {
+                *entry = span;
+            }
+        }
+    }
     let mut i = 0;
     while i < lines.len() {
-        if let Some(span) = outermost_collapsed(&spans, collapsed, i) {
+        if let Some(span) = collapsed_at.get(&i).copied() {
             out_lines.push(synthetic_line(&lines, span));
             view.push(ViewLine {
                 source_start: span.start_line,
@@ -332,17 +343,6 @@ pub(crate) fn draw_fold_chevron(
         ]
     };
     painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
-}
-
-fn outermost_collapsed<'a>(
-    spans: &'a [FoldSpan],
-    collapsed: &HashSet<usize>,
-    line: usize,
-) -> Option<&'a FoldSpan> {
-    spans
-        .iter()
-        .filter(|span| span.start_line == line && collapsed.contains(&span.start_line))
-        .max_by_key(|span| span.end_line)
 }
 
 fn safe_slice_prefix(s: &str, byte_idx: usize) -> &str {
