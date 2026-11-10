@@ -84,7 +84,6 @@ pub(crate) fn render_tree_node(
     match value {
         Value::Object(map) => {
             let is_collapsed = collapsed.contains(path);
-            let count = map.len();
 
             let (rect, resp) =
                 ui.allocate_exact_size(egui::vec2(available_w, row_height), egui::Sense::click());
@@ -169,13 +168,8 @@ pub(crate) fn render_tree_node(
                 );
             }
 
-            // Object Badge Pill
-            let badge_text = if count == 0 {
-                "{}".to_string()
-            } else {
-                format!("{{ {} }}", count)
-            };
-            let badge = egui::RichText::new(badge_text)
+            // Object badge: no count, only arrays show their length.
+            let badge = egui::RichText::new("{}")
                 .monospace()
                 .size(BADGE_FONT_SIZE)
                 .color(colors.badge_obj_fg);
@@ -386,9 +380,26 @@ pub(crate) fn render_tree_node(
 
             // Interaction mapping:
             // - Double click: copy value
-            // - Command + click: copy key
+            // - Command + click: copy key (deferred until a double click is ruled out)
             // - Command + double click: edit value
             // - Normal click: select node
+            let pending_id = resp.id.with("pending_copy_key");
+            let now = ui.input(|i| i.time);
+            let dbl_delay = ui.ctx().options(|o| o.input_options.max_double_click_delay);
+            if let Some(t) = ui.data(|d| d.get_temp::<f64>(pending_id)) {
+                if resp.double_clicked() {
+                    ui.data_mut(|d| d.remove::<f64>(pending_id));
+                } else if now - t >= dbl_delay {
+                    ui.data_mut(|d| d.remove::<f64>(pending_id));
+                    if let Some(k) = key_label {
+                        *action = Some(TreeAction::CopyKey(path.to_string(), k.to_string()));
+                    }
+                } else {
+                    ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(
+                        dbl_delay - (now - t),
+                    ));
+                }
+            }
             if resp.double_clicked() {
                 if is_cmd {
                     let k_label = key_label.unwrap_or("").to_string();
@@ -406,8 +417,11 @@ pub(crate) fn render_tree_node(
                 }
             } else if resp.clicked() {
                 if is_cmd {
-                    if let Some(k) = key_label {
-                        *action = Some(TreeAction::CopyKey(path.to_string(), k.to_string()));
+                    if key_label.is_some() {
+                        ui.data_mut(|d| d.insert_temp(pending_id, now));
+                        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(
+                            dbl_delay,
+                        ));
                     }
                 } else {
                     *action = Some(TreeAction::Select(path.to_string()));

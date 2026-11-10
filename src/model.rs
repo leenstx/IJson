@@ -242,6 +242,15 @@ pub(crate) fn parse_json_path(path: &str) -> Vec<PathSegment> {
     segments
 }
 
+pub(crate) fn value_at_path<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
+    parse_json_path(path)
+        .into_iter()
+        .try_fold(root, |value, segment| match segment {
+            PathSegment::Key(key) => value.get(key.as_str()),
+            PathSegment::Index(index) => value.get(index),
+        })
+}
+
 pub(crate) fn update_value_at_path(root: &mut Value, path: &str, new_val: Value) -> bool {
     let segments = parse_json_path(path);
     if segments.is_empty() {

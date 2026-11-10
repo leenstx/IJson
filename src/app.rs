@@ -1,5 +1,6 @@
 use eframe::egui;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::ops::{Deref, DerefMut};
 
 use crate::cache::{
@@ -11,7 +12,7 @@ use crate::fonts::AppFonts;
 use crate::highlight::highlight_json;
 use crate::icons::{draw_lucide_icon, LucideIcon};
 use crate::model::{
-    collect_all_expandable_paths, is_request_candidate, try_request_json, try_unescape_json,
+    collect_all_expandable_paths, is_request_candidate, value_at_path, try_request_json, try_unescape_json,
     ParseError, SortMode, TreeAction, ValueTypeTag,
 };
 use crate::tab::{
@@ -22,7 +23,7 @@ use crate::i18n::{tr, Language};
 use crate::theme::{ThemeColors, ThemeMode, UiColors};
 use crate::tree::render_tree_node;
 use crate::widgets::{
-    btn_clear, btn_collapse_all, btn_compare, btn_compress, btn_copy, btn_expand_all, btn_format,
+    btn_clear, mini_icon_button, btn_mode, toolbar_separator, btn_collapse_all, btn_compare, btn_compress, btn_copy, btn_expand_all, btn_format,
     btn_new_tab, btn_redo, btn_simplify, btn_sort, btn_undo, field_caption, info_pill, menu_item,
     menu_separator, modal_button, type_chip,
 };
@@ -1042,6 +1043,7 @@ impl JsonViewerApp {
         let colors = ThemeColors::current(ctx);
 
         self.handle_tab_shortcuts(ctx);
+        self.handle_search_shortcut(ctx);
         self.select_comparison_editor(ctx);
         self.handle_edit_history(ctx);
         // Command+V replaces the whole document only when the editor is not being edited.
@@ -1092,7 +1094,7 @@ impl JsonViewerApp {
                 self.left_panel_width = self.left_panel_width.clamp(min_w, max_w);
 
                 let left_w = self.left_panel_width;
-                let right_w = (total_w - left_w).max(100.0);
+                let edit_mode = self.tabs[self.active].edit_mode;
 
                 let toolbar_h = 28.0;
                 let spacing_h = 6.0;
@@ -1109,230 +1111,104 @@ impl JsonViewerApp {
                 );
                 let pane_rect = background_rect.shrink2(egui::vec2(0.0, 8.0));
 
-                // 1. LEFT TOOLBAR
-                let left_tb_rect = egui::Rect::from_min_size(origin, egui::vec2(left_w, toolbar_h));
-                let mut left_tb_ui = ui.new_child(
+                // 1. TOOLBAR: actions grouped by feature on the left
+                // (mode | reshape | history | folding | output | clear), search on the right.
+                let toolbar_rect = egui::Rect::from_min_size(origin, egui::vec2(total_w, toolbar_h));
+                let mut tb = ui.new_child(
                     egui::UiBuilder::default()
-                        .max_rect(left_tb_rect)
+                        .max_rect(toolbar_rect)
                         .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 );
-                left_tb_ui.spacing_mut().item_spacing = egui::vec2(3.0, 0.0);
-                if self.tabs.len() == 1 && btn_new_tab(&mut left_tb_ui).clicked() {
-                    let ctx = left_tb_ui.ctx().clone();
+                tb.spacing_mut().item_spacing = egui::vec2(3.0, 0.0);
+                if self.tabs.len() == 1 && btn_new_tab(&mut tb).clicked() {
+                    let ctx = tb.ctx().clone();
                     self.add_tab(&ctx);
                 }
-                self.tabs[self.active].render_editor_toolbar(&mut left_tb_ui);
-                open_comparison = btn_compare(&mut left_tb_ui).clicked();
+                if btn_mode(&mut tb, edit_mode).clicked() {
+                    let ctx = tb.ctx().clone();
+                    self.tabs[self.active].set_edit_mode(&ctx, !edit_mode);
+                    self.cache_dirty = true;
+                }
+                let tab = &mut self.tabs[self.active];
+                toolbar_separator(&mut tb);
+                tab.toolbar_reshape(&mut tb, edit_mode);
+                toolbar_separator(&mut tb);
+                tab.toolbar_history(&mut tb);
+                toolbar_separator(&mut tb);
+                if btn_collapse_all(&mut tb).clicked() {
+                    tab.collapse_all();
+                }
+                if btn_expand_all(&mut tb).clicked() {
+                    tab.expand_all();
+                }
+                toolbar_separator(&mut tb);
+                tab.toolbar_output(&mut tb);
+                open_comparison = btn_compare(&mut tb).clicked();
+                toolbar_separator(&mut tb);
+                tab.toolbar_clear(&mut tb);
 
-                // 2. RIGHT TOOLBAR
-                let right_tb_rect = egui::Rect::from_min_size(
-                    egui::pos2(origin.x + left_w, origin.y),
-                    egui::vec2(right_w, toolbar_h),
+                let search_rect = egui::Rect::from_min_max(
+                    egui::pos2(tb.min_rect().right() + 12.0, origin.y),
+                    egui::pos2(origin.x + total_w - 6.0, origin.y + toolbar_h),
                 );
-                let mut right_tb_ui = ui.new_child(
+                let mut search_ui = ui.new_child(
                     egui::UiBuilder::default()
-                        .max_rect(right_tb_rect)
+                        .max_rect(search_rect)
                         .layout(egui::Layout::right_to_left(egui::Align::Center)),
                 );
-                right_tb_ui.spacing_mut().item_spacing = egui::vec2(3.0, 0.0);
+                let pill_w = search_rect.width().clamp(120.0, 300.0).min(search_rect.width());
+                tab.render_search_box(&mut search_ui, pill_w, colors.ui);
 
-                // Right side buttons (laid out right-to-left):
-                // 1. Expand All
-                if btn_expand_all(&mut right_tb_ui).clicked() {
-                    self.expand_all();
-                }
-
-                // 2. Collapse All
-                if btn_collapse_all(&mut right_tb_ui).clicked() {
-                    self.collapse_all();
-                }
-
-                // 3. Level buttons L4, L3, L2, L1 (in reverse so L1 ends up leftmost)
-                for level in (1..=4).rev() {
-                    let is_active = self.current_depth == level;
-                    let label = format!("L{}", level);
-                    let (rect, resp) = right_tb_ui
-                        .allocate_exact_size(egui::vec2(24.0, 22.0), egui::Sense::click());
-                    if resp.clicked() {
-                        self.expand_to_depth(level);
-                    }
-
-                    let p = colors.ui;
-                    let bg = if is_active {
-                        p.blue_bg
-                    } else if resp.hovered() {
-                        p.hover
-                    } else {
-                        p.subtle
-                    };
-                    let stroke = if is_active {
-                        p.blue_border
-                    } else {
-                        p.border
-                    };
-                    let text_color = if is_active {
-                        p.blue
-                    } else if resp.hovered() {
-                        p.strong
-                    } else {
-                        p.muted
-                    };
-
-                    right_tb_ui
-                        .painter()
-                        .rect_filled(rect, egui::CornerRadius::same(4), bg);
-                    right_tb_ui.painter().rect_stroke(
-                        rect,
-                        egui::CornerRadius::same(4),
-                        egui::Stroke::new(1.0, stroke),
-                        egui::StrokeKind::Inside,
+                if edit_mode {
+                    // 2. EDIT MODE: the editor takes the whole width.
+                    let editor_rect = egui::Rect::from_min_size(
+                        egui::pos2(origin.x, pane_rect.top()),
+                        egui::vec2(total_w, pane_rect.height()),
                     );
-                    right_tb_ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        &label,
-                        egui::FontId::proportional(11.5),
-                        text_color,
+                    let mut editor_ui = ui.new_child(
+                        egui::UiBuilder::default()
+                            .max_rect(editor_rect)
+                            .layout(egui::Layout::top_down(egui::Align::LEFT)),
                     );
-                    resp.on_hover_text(format!("Level {}", level));
+                    self.tabs[self.active].render_editor_card(
+                        &mut editor_ui,
+                        editor_rect,
+                        colors,
+                        None,
+                    );
+                    self.draw_copy_notice(&editor_ui, editor_rect, colors.ui);
+                } else {
+                    // 2. VIEW MODE: whole tree on the left, selected node on the right.
+                    let tab = &mut self.tabs[self.active];
+                    // The editor is hidden, so clicks and pastes must not target it.
+                    tab.editor_card_rect = egui::Rect::NOTHING;
+                    tab.poll_request_loading(ui.ctx());
+
+                    let tree_rect = egui::Rect::from_min_size(
+                        egui::pos2(origin.x, pane_rect.top()),
+                        egui::vec2(left_w, pane_rect.height()),
+                    );
+                    let mut tree_ui = ui.new_child(
+                        egui::UiBuilder::default()
+                            .max_rect(tree_rect)
+                            .layout(egui::Layout::top_down(egui::Align::LEFT)),
+                    );
+                    self.render_tree_card(&mut tree_ui, tree_rect, colors);
+
+                    let node_rect = egui::Rect::from_min_size(
+                        egui::pos2(origin.x + left_w, pane_rect.top()),
+                        egui::vec2((total_w - left_w).max(100.0), pane_rect.height()),
+                    );
+                    let mut node_ui = ui.new_child(
+                        egui::UiBuilder::default()
+                            .max_rect(node_rect)
+                            .layout(egui::Layout::top_down(egui::Align::LEFT)),
+                    );
+                    self.tabs[self.active].render_node_card(&mut node_ui, node_rect, colors);
+
+                    // Register last so the divider takes priority over both cards.
+                    self.render_split_handle(ui, panel_rect, pane_rect);
                 }
-
-                // Clean 4px spacing between L1 and Search Box
-                right_tb_ui.add_space(4.0);
-
-                // 4. Search Box (immediately to the left of L1!)
-                let p = colors.ui;
-                let search_w = (right_w - 240.0).clamp(70.0, 140.0);
-                let search_frame = egui::Frame::default()
-                    .fill(p.surface)
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        p.border,
-                    ))
-                    .corner_radius(egui::CornerRadius::same(12))
-                    .inner_margin(egui::Margin::symmetric(7, 3));
-
-                search_frame.show(&mut right_tb_ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(5.0, 0.0);
-
-                        let (icon_rect, _) =
-                            ui.allocate_exact_size(egui::vec2(14.0, 16.0), egui::Sense::hover());
-                        let search_icon_rect = egui::Rect::from_center_size(
-                            icon_rect.center(),
-                            egui::vec2(13.0, 13.0),
-                        );
-                        draw_lucide_icon(
-                            ui.painter(),
-                            search_icon_rect,
-                            LucideIcon::Search,
-                            p.faint,
-                        );
-
-                        let search_id = search_input_id(self.id);
-                        // Consume navigation before TextEdit handles Enter or moves its cursor.
-                        let (prev, next) = if ui.memory(|mem| mem.has_focus(search_id)) {
-                            ui.input_mut(|i| {
-                                let prev = i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
-                                    || i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter);
-                                let next = i
-                                    .consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
-                                    || i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-                                (prev, next)
-                            })
-                        } else {
-                            (false, false)
-                        };
-                        let search_resp = ui.add(
-                            egui::TextEdit::singleline(&mut self.search_query)
-                                .id(search_id)
-                                .hint_text(tr(ui.ctx(), "Search…"))
-                                .desired_width(search_w)
-                                .frame(false),
-                        );
-
-                        if search_resp.changed() {
-                            self.update_search();
-                        }
-                        if prev {
-                            self.search_prev();
-                        } else if next {
-                            self.search_next();
-                        }
-
-                        if !self.search_query.is_empty() {
-                            if ui.small_button("✕").clicked() {
-                                self.search_query.clear();
-                                self.update_search();
-                            }
-                        }
-                    });
-                });
-
-                // 5. Match Count Badge & Navigation (to the left of Search Box)
-                if !self.search_matches.is_empty() {
-                    if right_tb_ui
-                        .small_button("▼")
-                        .on_hover_text(tr(right_tb_ui.ctx(), "Next match"))
-                        .clicked()
-                    {
-                        self.search_next();
-                    }
-                    if right_tb_ui
-                        .small_button("▲")
-                        .on_hover_text(tr(right_tb_ui.ctx(), "Previous match"))
-                        .clicked()
-                    {
-                        self.search_prev();
-                    }
-
-                    let match_badge =
-                        egui::Frame::default().inner_margin(egui::Margin::symmetric(5, 1));
-
-                    match_badge.show(&mut right_tb_ui, |ui| {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{}/{}",
-                                self.search_index + 1,
-                                self.search_matches.len()
-                            ))
-                            .color(p.muted)
-                            .small(),
-                        );
-                    });
-                }
-
-                // 3. LEFT EDITOR CARD
-                let left_card_rect = egui::Rect::from_min_size(
-                    egui::pos2(origin.x, pane_rect.top()),
-                    egui::vec2(left_w, pane_rect.height()),
-                );
-                let mut left_card_ui = ui.new_child(
-                    egui::UiBuilder::default()
-                        .max_rect(left_card_rect)
-                        .layout(egui::Layout::top_down(egui::Align::LEFT)),
-                );
-                self.tabs[self.active].render_editor_card(
-                    &mut left_card_ui,
-                    left_card_rect,
-                    colors,
-                    None,
-                );
-
-                // 4. RIGHT TREE CARD
-                let right_card_rect = egui::Rect::from_min_size(
-                    egui::pos2(origin.x + left_w, pane_rect.top()),
-                    egui::vec2(right_w, pane_rect.height()),
-                );
-                let mut right_card_ui = ui.new_child(
-                    egui::UiBuilder::default()
-                        .max_rect(right_card_rect)
-                        .layout(egui::Layout::top_down(egui::Align::LEFT)),
-                );
-                self.render_tree_card(&mut right_card_ui, right_card_rect, colors);
-
-                // Register last so the divider takes priority over both cards.
-                self.render_split_handle(ui, panel_rect, pane_rect);
 
                 // Consume the full panel rect so egui doesn't complain
                 ui.allocate_rect(panel_rect, egui::Sense::hover());
@@ -1392,6 +1268,31 @@ impl JsonViewerApp {
                 )
             });
         });
+    }
+
+    /// ⌘F focuses the search box and selects its text.
+    fn handle_search_shortcut(&mut self, ctx: &egui::Context) {
+        if self.comparison.is_some() || self.edit_modal.is_some() {
+            return;
+        }
+        let pressed = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F));
+        if !pressed {
+            return;
+        }
+        let search_id = search_input_id(self.id);
+        let editor_id = json_editor_id(self.id);
+        ctx.memory_mut(|mem| {
+            mem.surrender_focus(editor_id);
+            mem.request_focus(search_id);
+        });
+        self.editor_editing = false;
+        let mut state = egui::text_edit::TextEditState::load(ctx, search_id).unwrap_or_default();
+        let len = self.search_query.chars().count();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(len),
+        )));
+        state.store(ctx, search_id);
     }
 
     fn handle_tab_shortcuts(&mut self, ctx: &egui::Context) {
@@ -1785,6 +1686,202 @@ impl JsonTab {
         self.editor_editing = true;
     }
 
+    pub(crate) fn set_edit_mode(&mut self, ctx: &egui::Context, on: bool) {
+        self.edit_mode = on;
+        self.editor_editing = false;
+        self.editor_card_rect = egui::Rect::NOTHING;
+        let editor_id = json_editor_id(self.id);
+        ctx.memory_mut(|mem| mem.surrender_focus(editor_id));
+    }
+
+    /// View mode's right panel: a tree rooted at the node selected on the left,
+    /// or just the value when a plain value (string, number, bool, null) is selected.
+    fn render_node_card(&mut self, ui: &mut egui::Ui, card_rect: egui::Rect, colors: ThemeColors) {
+        let p = colors.ui;
+        ui.set_clip_rect(ui.clip_rect().intersect(card_rect));
+        egui::Frame::default()
+            .fill(p.surface)
+            .inner_margin(egui::Margin::symmetric(8, 0))
+            .show(ui, |ui| {
+                ui.set_min_size(ui.available_size());
+                let hint = |ui: &mut egui::Ui, text: &str| {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(egui::RichText::new(tr(ui.ctx(), text)).color(p.faint));
+                    });
+                };
+                let Some(parsed) = self.parsed.take() else {
+                    return;
+                };
+                let Some(path) = self.selected_path.clone() else {
+                    self.parsed = Some(parsed);
+                    hint(ui, "Select a node on the left to view it here");
+                    return;
+                };
+                let Some(value) = value_at_path(&parsed, &path) else {
+                    self.parsed = Some(parsed);
+                    hint(ui, "This node no longer exists");
+                    return;
+                };
+
+                if !(value.is_object() || value.is_array()) {
+                    let (text, color) = match value {
+                        Value::String(s) => (s.clone(), colors.string),
+                        Value::Number(n) => (n.to_string(), colors.number),
+                        Value::Bool(b) => (b.to_string(), colors.boolean),
+                        _ => ("null".to_string(), colors.null),
+                    };
+                    self.parsed = Some(parsed);
+                    egui::ScrollArea::vertical()
+                        .id_salt(("node_value_scroll", self.id))
+                        .drag_to_scroll(false)
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                        .auto_shrink([false; 2])
+                        .show(ui, |ui| {
+                            ui.add_space(6.0);
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(text)
+                                        .font(egui::FontId::monospace(13.0))
+                                        .line_height(Some(19.5))
+                                        .color(color),
+                                )
+                                .wrap()
+                                .selectable(true),
+                            );
+                        });
+                    return;
+                }
+
+                // Root row label: the last key or index of the path.
+                let key_label = path
+                    .rfind(|c| c == '.' || c == '[')
+                    .map(|pos| path[pos..].trim_start_matches('.').to_string());
+                let (action, _) = show_tree_pane(
+                    ui,
+                    card_rect,
+                    colors,
+                    TreePane {
+                        salt: "node_tree",
+                        id: self.id,
+                        root: value,
+                        root_path: &path,
+                        root_label: key_label.as_deref(),
+                        collapsed: &mut self.node_collapsed,
+                        scroll_x: &mut self.node_scroll_x,
+                        content_width: &mut self.node_content_width,
+                        search_query: &self.search_query,
+                        search_matches: &self.search_matches,
+                        cur_match_path: None,
+                        selected_path: self.node_selected_path.as_deref(),
+                        reveal_match: false,
+                    },
+                );
+                self.parsed = Some(parsed);
+                if let Some(act) = action {
+                    self.apply_tree_action(ui.ctx(), act, true);
+                }
+                if self.copy_notice_in_node {
+                    self.draw_copy_notice(ui, card_rect, p);
+                }
+            });
+    }
+
+    /// Transient "Copied …" badge at the top-right of a card.
+    fn draw_copy_notice(&mut self, ui: &egui::Ui, card_rect: egui::Rect, p: UiColors) {
+        let now = std::time::Instant::now();
+        let is_active_notice = self
+            .copy_notice
+            .as_ref()
+            .is_some_and(|(_, t)| now.duration_since(*t).as_secs_f32() < 1.5);
+
+        if !is_active_notice && self.copy_notice.is_some() {
+            self.copy_notice = None;
+        }
+        if is_active_notice {
+            ui.ctx().request_repaint();
+            if let Some((msg, _)) = &self.copy_notice {
+                let green = if ui.visuals().dark_mode {
+                    egui::Color32::from_rgb(74, 222, 128)
+                } else {
+                    egui::Color32::from_rgb(22, 163, 74)
+                };
+                let badge_text = format!("✓ {}", msg);
+                let badge_font = egui::FontId::proportional(11.0);
+                let galley = ui.fonts(|f| f.layout_no_wrap(badge_text, badge_font, green));
+                let badge_size = egui::vec2(galley.rect.width() + 16.0, 20.0);
+                let badge_pos = egui::pos2(
+                    card_rect.right() - badge_size.x - 10.0,
+                    card_rect.top() + 6.0,
+                );
+                let badge_rect = egui::Rect::from_min_size(badge_pos, badge_size);
+
+                ui.painter()
+                    .rect_filled(badge_rect, egui::CornerRadius::same(10), p.surface);
+                ui.painter().rect_stroke(
+                    badge_rect,
+                    egui::CornerRadius::same(10),
+                    egui::Stroke::new(1.0, green),
+                    egui::StrokeKind::Inside,
+                );
+                ui.painter().galley(
+                    egui::pos2(
+                        badge_rect.left() + 8.0,
+                        badge_rect.center().y - galley.rect.height() * 0.5,
+                    ),
+                    galley,
+                    green,
+                );
+            }
+        }
+    }
+
+    /// Handles a click or menu action from either tree. The right-hand tree keeps its
+    /// own fold state and highlight, so it does not change the left tree's selection.
+    fn apply_tree_action(&mut self, ctx: &egui::Context, act: TreeAction, node_panel: bool) {
+        let copied = |tab: &mut Self, text: &str, msg: &str| {
+            if let Ok(mut cb) = arboard::Clipboard::new() {
+                let _ = cb.set_text(text);
+            }
+            tab.copy_notice = Some((tr(ctx, msg).to_string(), std::time::Instant::now()));
+            tab.copy_notice_in_node = node_panel;
+            ctx.request_repaint();
+        };
+        let select = |tab: &mut Self, path: String| {
+            if node_panel {
+                tab.node_selected_path = Some(path);
+            } else {
+                tab.selected_path = Some(path);
+            }
+        };
+        match act {
+            TreeAction::Select(path) => select(self, path),
+            TreeAction::CopyText(txt) => {
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    let _ = cb.set_text(txt);
+                }
+            }
+            TreeAction::CopyValue(path, val) => {
+                select(self, path);
+                copied(self, &val, "Copied value");
+            }
+            TreeAction::CopyKey(path, key) => {
+                select(self, path);
+                copied(self, &key, "Copied key");
+            }
+            TreeAction::StartEdit(path, key, val) => self.open_edit_modal(&path, &key, &val),
+            TreeAction::DeleteNode(path) => self.delete_node_at(&path),
+            TreeAction::ExpandSubtree(path) => {
+                let set = if node_panel { &mut self.node_collapsed } else { &mut self.collapsed };
+                set.retain(|p| !p.starts_with(&path));
+            }
+            TreeAction::CollapseSubtree(path, val) => {
+                let set = if node_panel { &mut self.node_collapsed } else { &mut self.collapsed };
+                collect_all_expandable_paths(&val, &path, set);
+            }
+            TreeAction::DownloadImage(url) => crate::image_preview::save_image_dialog(&url),
+        }
+    }
+
     fn sync_editor_editing(&mut self, ctx: &egui::Context) {
         let editor_id = json_editor_id(self.id);
         if ctx.input(|i| i.pointer.primary_clicked()) {
@@ -2078,8 +2175,20 @@ impl JsonViewerApp {
 }
 
 impl JsonTab {
+    /// Compare mode's per-editor toolbar.
     fn render_editor_toolbar(&mut self, ui: &mut egui::Ui) {
-        if btn_format(ui).clicked() {
+        self.toolbar_reshape(ui, true);
+        toolbar_separator(ui);
+        self.toolbar_history(ui);
+        toolbar_separator(ui);
+        self.toolbar_output(ui);
+        toolbar_separator(ui);
+        self.toolbar_clear(ui);
+    }
+
+    /// Buttons that rewrite the document's shape.
+    fn toolbar_reshape(&mut self, ui: &mut egui::Ui, show_format: bool) {
+        if show_format && btn_format(ui).clicked() {
             self.format_json(ui.ctx());
         }
         if btn_sort(ui, self.sort_mode).clicked() {
@@ -2090,25 +2199,145 @@ impl JsonTab {
             };
             self.apply_sort();
         }
+        if btn_simplify(ui, self.parsed.is_some()).clicked() {
+            self.simplify_json();
+        }
+    }
+
+    fn toolbar_history(&mut self, ui: &mut egui::Ui) {
         if btn_undo(ui, self.can_undo()).clicked() {
             self.undo_edit();
         }
         if btn_redo(ui, self.can_redo()).clicked() {
             self.redo_edit();
         }
-        if btn_compress(ui).clicked() {
-            self.compress_json();
-        }
-        if btn_simplify(ui, self.parsed.is_some()).clicked() {
-            self.simplify_json();
-        }
+    }
+
+    /// Buttons that copy the document out.
+    fn toolbar_output(&mut self, ui: &mut egui::Ui) {
         if btn_copy(ui).clicked() {
             if let Ok(mut cb) = arboard::Clipboard::new() {
                 let _ = cb.set_text(self.input.clone());
             }
         }
+        if btn_compress(ui).clicked() && self.copy_minified() {
+            self.copy_notice = Some((
+                tr(ui.ctx(), "Copied minified JSON").to_string(),
+                std::time::Instant::now(),
+            ));
+            self.copy_notice_in_node = false;
+        }
+    }
+
+    fn toolbar_clear(&mut self, ui: &mut egui::Ui) {
         if btn_clear(ui).clicked() {
             self.clear_document();
+        }
+    }
+
+    /// Search pill: icon, query, match count with previous/next, and clear.
+    fn render_search_box(&mut self, ui: &mut egui::Ui, pill_w: f32, p: UiColors) {
+        let search_id = search_input_id(self.id);
+        let focused = ui.memory(|mem| mem.has_focus(search_id));
+        let (rect, bg_resp) =
+            ui.allocate_exact_size(egui::vec2(pill_w, 26.0), egui::Sense::click());
+        if bg_resp.clicked() {
+            ui.memory_mut(|mem| mem.request_focus(search_id));
+        }
+        let hovered = ui.rect_contains_pointer(rect);
+        let (fill, stroke) = if focused {
+            (p.surface, egui::Stroke::new(1.5, p.blue))
+        } else if hovered {
+            (p.surface, egui::Stroke::new(1.0, p.blue_border))
+        } else {
+            (p.subtle, egui::Stroke::new(1.0, p.border))
+        };
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(13), fill);
+        ui.painter()
+            .rect_stroke(rect, egui::CornerRadius::same(13), stroke, egui::StrokeKind::Inside);
+
+        let mut row = ui.new_child(
+            egui::UiBuilder::default()
+                .max_rect(rect.shrink2(egui::vec2(10.0, 0.0)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        row.spacing_mut().item_spacing = egui::vec2(5.0, 0.0);
+
+        let (icon_rect, _) = row.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+        draw_lucide_icon(
+            row.painter(),
+            icon_rect,
+            LucideIcon::Search,
+            if focused { p.blue } else { p.muted },
+        );
+
+        // Consume navigation before TextEdit handles Enter or moves its cursor.
+        let (mut prev, mut next) = if focused {
+            row.input_mut(|i| {
+                let prev = i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+                    || i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter);
+                let next = i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                (prev, next)
+            })
+        } else {
+            (false, false)
+        };
+
+        // Size the text field so the trailing controls always fit inside the pill.
+        let has_query = !self.search_query.is_empty();
+        let has_matches = !self.search_matches.is_empty();
+        let count_font = egui::FontId::proportional(11.0);
+        let count_text = has_query.then(|| {
+            if has_matches {
+                format!("{}/{}", self.search_index + 1, self.search_matches.len())
+            } else {
+                tr(row.ctx(), "No matches").to_string()
+            }
+        });
+        let gap = row.spacing().item_spacing.x;
+        let count_w = count_text.as_ref().map_or(0.0, |t| {
+            row.fonts(|f| f.layout_no_wrap(t.clone(), count_font.clone(), p.muted).size().x) + gap
+        });
+        let nav_w = if has_matches { 2.0 * (18.0 + gap) } else { 0.0 };
+        let clear_w = if has_query { 18.0 + gap } else { 0.0 };
+        let text_w = (row.available_width() - count_w - nav_w - clear_w - gap).max(30.0);
+
+        let search_resp = row.add(
+            egui::TextEdit::singleline(&mut self.search_query)
+                .id(search_id)
+                .hint_text(
+                    egui::RichText::new(tr(row.ctx(), "Search keys and values")).color(p.faint),
+                )
+                .desired_width(text_w)
+                .margin(egui::Margin::ZERO)
+                .frame(false),
+        );
+        if search_resp.changed() {
+            self.update_search();
+        }
+
+        if let Some(text) = count_text {
+            row.label(
+                egui::RichText::new(text)
+                    .font(count_font)
+                    .color(if has_matches { p.muted } else { p.danger }),
+            );
+        }
+        if has_matches {
+            prev |= mini_icon_button(&mut row, LucideIcon::ChevronUp, "Previous match").clicked();
+            next |= mini_icon_button(&mut row, LucideIcon::ChevronDown, "Next match").clicked();
+        }
+        if has_query && mini_icon_button(&mut row, LucideIcon::X, "Clear search").clicked() {
+            self.search_query.clear();
+            self.update_search();
+            row.memory_mut(|mem| mem.request_focus(search_id));
+        }
+
+        if prev {
+            self.search_prev();
+        } else if next {
+            self.search_next();
         }
     }
 
@@ -2838,8 +3067,6 @@ impl JsonViewerApp {
                 return;
             }
 
-            let mut action: Option<TreeAction> = None;
-
             // Borrow the document for this frame instead of deep-cloning it.
             let parsed = self.parsed.take().unwrap();
             let search_query = self.search_query.clone();
@@ -2859,287 +3086,255 @@ impl JsonViewerApp {
                 self.tree_scroll_x = 0.0;
             }
 
-            // Track horizontal scrolling from mouse wheel or Shift+scroll,
-            // while explicitly disabling touchpad horizontal scrolling.
-            let (manual_scroll_x, is_over_tree) = ui.input(|i| {
-                let over = i
-                    .pointer
-                    .hover_pos()
-                    .map_or(false, |p| card_rect.contains(p));
-                let mut dx = 0.0;
-                if over {
-                    for event in &i.events {
-                        if let egui::Event::MouseWheel {
-                            unit,
-                            delta,
-                            modifiers,
-                        } = event
-                        {
-                            match unit {
-                                egui::MouseWheelUnit::Line | egui::MouseWheelUnit::Page => {
-                                    let factor = if *unit == egui::MouseWheelUnit::Line {
-                                        40.0
-                                    } else {
-                                        200.0
-                                    };
-                                    if modifiers.shift {
-                                        dx += (delta.x + delta.y) * factor;
-                                    } else {
-                                        dx += delta.x * factor;
-                                    }
-                                }
-                                egui::MouseWheelUnit::Point => {
-                                    // Touchpad: disable horizontal scrolling unless Shift is explicitly held
-                                    if modifiers.shift {
-                                        dx += delta.x + delta.y;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                (dx, over)
-            });
-
-            let visible_w = (card_rect.width() - 16.0).max(50.0);
-            let text_exceeds_width = self.tree_content_width > visible_w + 2.0;
-            let scroll_content_w = if text_exceeds_width {
-                self.tree_content_width + 16.0
-            } else {
-                visible_w
-            };
-            let max_scroll_x = if text_exceeds_width {
-                scroll_content_w - visible_w
-            } else {
-                0.0
-            };
-
-            if !text_exceeds_width {
-                self.tree_scroll_x = 0.0;
-            } else if is_over_tree && manual_scroll_x != 0.0 {
-                self.tree_scroll_x =
-                    (self.tree_scroll_x - manual_scroll_x).clamp(0.0, max_scroll_x);
-            } else {
-                self.tree_scroll_x = self.tree_scroll_x.clamp(0.0, max_scroll_x);
+            let tab: &mut JsonTab = self;
+            let (action, revealed) = show_tree_pane(
+                ui,
+                card_rect,
+                colors,
+                TreePane {
+                    salt: "tree",
+                    id: tab.id,
+                    root: &parsed,
+                    root_path: "$",
+                    root_label: None,
+                    collapsed: &mut tab.collapsed,
+                    scroll_x: &mut tab.tree_scroll_x,
+                    content_width: &mut tab.tree_content_width,
+                    search_query: &search_query,
+                    search_matches: &search_matches,
+                    cur_match_path: cur_match_path.as_deref(),
+                    selected_path: selected_path.as_deref(),
+                    reveal_match,
+                },
+            );
+            if revealed {
+                tab.reveal_search_match = false;
             }
-
-            // Keep the full horizontal track inside the clipped pane.
-            let scrollbar_h = if text_exceeds_width {
-                10.0 + ui.spacing().item_spacing.y
-            } else {
-                0.0
-            };
-            let available_h = ui.available_height();
-            let sa_h = (available_h - scrollbar_h).max(30.0);
-
-            let tree_scroll_id = self.id;
-            let mut max_row_w = 0.0f32;
-            let mut current_match_rect = None;
-
-            egui::ScrollArea::vertical()
-                .id_salt(("tree_vert_scroll", tree_scroll_id))
-                .drag_to_scroll(false)
-                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                .auto_shrink([false; 2])
-                .max_height(sa_h)
-                .show(ui, |ui| {
-                    let horiz_offset = self.tree_scroll_x;
-                    egui::ScrollArea::horizontal()
-                        .id_salt(("tree_horiz_scroll", tree_scroll_id))
-                        .horizontal_scroll_offset(horiz_offset)
-                        .drag_to_scroll(false)
-                        .enable_scrolling(false)
-                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            if text_exceeds_width {
-                                ui.set_min_width(scroll_content_w);
-                            }
-                            render_tree_node(
-                                ui,
-                                &parsed,
-                                "$",
-                                None,
-                                0,
-                                &mut self.collapsed,
-                                &search_query,
-                                &search_matches,
-                                cur_match_path.as_deref(),
-                                selected_path.as_deref(),
-                                colors,
-                                &mut action,
-                                &mut max_row_w,
-                                &mut current_match_rect,
-                            );
-                        });
-                    // Issue the request outside the horizontal area so the vertical area handles it.
-                    if reveal_match {
-                        if let Some(rect) = current_match_rect {
-                            ui.scroll_to_rect(rect, Some(egui::Align::Center));
-                            self.reveal_search_match = false;
-                        }
-                    }
-                });
-
             self.parsed = Some(parsed);
-            self.tree_content_width = max_row_w;
-
-            if text_exceeds_width {
-                ui.add_space(2.0);
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-
-                    let track_w = (ui.available_width() - 4.0).max(20.0);
-                    let (track_rect, scroll_resp) = ui.allocate_exact_size(
-                        egui::vec2(track_w, 8.0),
-                        egui::Sense::click_and_drag(),
-                    );
-                    let scroll_resp = scroll_resp.on_hover_cursor(egui::CursorIcon::Default);
-
-                    let thumb_w = ((visible_w / scroll_content_w) * track_w).clamp(24.0, track_w);
-                    let scrollable_track = (track_w - thumb_w).max(1.0);
-
-                    if scroll_resp.dragged() {
-                        let drag_x = scroll_resp.drag_delta().x;
-                        let delta_scroll = drag_x * (max_scroll_x / scrollable_track);
-                        self.tree_scroll_x =
-                            (self.tree_scroll_x + delta_scroll).clamp(0.0, max_scroll_x);
-                    } else if scroll_resp.clicked() {
-                        if let Some(pos) = scroll_resp.interact_pointer_pos() {
-                            let target_ratio = ((pos.x - track_rect.min.x - thumb_w * 0.5)
-                                / scrollable_track)
-                                .clamp(0.0, 1.0);
-                            self.tree_scroll_x =
-                                (target_ratio * max_scroll_x).clamp(0.0, max_scroll_x);
-                        }
-                    }
-
-                    let scroll_ratio = (self.tree_scroll_x / max_scroll_x).clamp(0.0, 1.0);
-                    let thumb_x = track_rect.min.x + scroll_ratio * scrollable_track;
-                    let thumb_rect = egui::Rect::from_min_size(
-                        egui::pos2(thumb_x, track_rect.min.y + 1.0),
-                        egui::vec2(thumb_w, track_rect.height() - 2.0),
-                    );
-
-                    ui.painter().rect_filled(
-                        track_rect,
-                        egui::CornerRadius::same(4),
-                        p.subtle,
-                    );
-
-                    let thumb_color = if scroll_resp.is_pointer_button_down_on() {
-                        p.strong
-                    } else if scroll_resp.hovered() {
-                        p.muted
-                    } else {
-                        p.border
-                    };
-                    ui.painter().rect_filled(
-                        thumb_rect,
-                        egui::CornerRadius::same(3),
-                        thumb_color,
-                    );
-                });
-            }
 
             if let Some(act) = action {
-                match act {
-                    TreeAction::Select(path) => {
-                        self.selected_path = Some(path);
-                    }
-                    TreeAction::CopyText(txt) => {
-                        if let Ok(mut cb) = arboard::Clipboard::new() {
-                            let _ = cb.set_text(txt);
-                        }
-                    }
-                    TreeAction::CopyValue(path, val) => {
-                        self.selected_path = Some(path);
-                        if let Ok(mut cb) = arboard::Clipboard::new() {
-                            let _ = cb.set_text(&val);
-                        }
-                        self.copy_notice = Some((
-                            tr(ui.ctx(), "Copied value").to_string(),
-                            std::time::Instant::now(),
-                        ));
-                        ui.ctx().request_repaint();
-                    }
-                    TreeAction::CopyKey(path, key) => {
-                        self.selected_path = Some(path);
-                        if let Ok(mut cb) = arboard::Clipboard::new() {
-                            let _ = cb.set_text(&key);
-                        }
-                        self.copy_notice = Some((
-                            tr(ui.ctx(), "Copied key").to_string(),
-                            std::time::Instant::now(),
-                        ));
-                        ui.ctx().request_repaint();
-                    }
-                    TreeAction::StartEdit(path, key, val) => {
-                        self.open_edit_modal(&path, &key, &val);
-                    }
-                    TreeAction::DeleteNode(path) => {
-                        self.delete_node_at(&path);
-                    }
-                    TreeAction::ExpandSubtree(path) => {
-                        self.collapsed.retain(|p| !p.starts_with(&path));
-                    }
-                    TreeAction::CollapseSubtree(path, val) => {
-                        collect_all_expandable_paths(&val, &path, &mut self.collapsed);
-                    }
-                    TreeAction::DownloadImage(url) => {
-                        crate::image_preview::save_image_dialog(&url);
-                    }
-                }
+                self.apply_tree_action(ui.ctx(), act, false);
             }
 
-            // Transient copy confirmation badge at top-right of tree view card (no permanent hint)
-            let now = std::time::Instant::now();
-            let is_active_notice = self
-                .copy_notice
-                .as_ref()
-                .is_some_and(|(_, t)| now.duration_since(*t).as_secs_f32() < 1.5);
-
-            if !is_active_notice && self.copy_notice.is_some() {
-                self.copy_notice = None;
-            }
-            if is_active_notice {
-                ui.ctx().request_repaint();
-                if let Some((msg, _)) = &self.copy_notice {
-                    let green = if ui.visuals().dark_mode {
-                        egui::Color32::from_rgb(74, 222, 128)
-                    } else {
-                        egui::Color32::from_rgb(22, 163, 74)
-                    };
-                    let badge_text = format!("✓ {}", msg);
-                    let badge_font = egui::FontId::proportional(11.0);
-                    let galley = ui.fonts(|f| f.layout_no_wrap(badge_text, badge_font, green));
-                    let badge_size = egui::vec2(galley.rect.width() + 16.0, 20.0);
-                    let badge_pos = egui::pos2(
-                        card_rect.right() - badge_size.x - 10.0,
-                        card_rect.top() + 6.0,
-                    );
-                    let badge_rect = egui::Rect::from_min_size(badge_pos, badge_size);
-
-                    ui.painter()
-                        .rect_filled(badge_rect, egui::CornerRadius::same(10), p.surface);
-                    ui.painter().rect_stroke(
-                        badge_rect,
-                        egui::CornerRadius::same(10),
-                        egui::Stroke::new(1.0, green),
-                        egui::StrokeKind::Inside,
-                    );
-                    ui.painter().galley(
-                        egui::pos2(
-                            badge_rect.left() + 8.0,
-                            badge_rect.center().y - galley.rect.height() * 0.5,
-                        ),
-                        galley,
-                        green,
-                    );
-                }
+            if !self.copy_notice_in_node {
+                self.draw_copy_notice(ui, card_rect, p);
             }
         });
     }
+
+}
+
+/// Per-panel state for a scrollable JSON tree. Both View-mode panels use this so
+/// they scroll and respond to gestures the same way.
+struct TreePane<'a> {
+    salt: &'static str,
+    id: u64,
+    root: &'a Value,
+    root_path: &'a str,
+    root_label: Option<&'a str>,
+    collapsed: &'a mut HashSet<String>,
+    scroll_x: &'a mut f32,
+    content_width: &'a mut f32,
+    search_query: &'a str,
+    search_matches: &'a [String],
+    cur_match_path: Option<&'a str>,
+    selected_path: Option<&'a str>,
+    reveal_match: bool,
+}
+
+/// Draws a tree with vertical scrolling and a custom horizontal scrollbar.
+/// Returns the row action, and whether the current search match was scrolled into view.
+fn show_tree_pane(
+    ui: &mut egui::Ui,
+    card_rect: egui::Rect,
+    colors: ThemeColors,
+    pane: TreePane,
+) -> (Option<TreeAction>, bool) {
+    let p = colors.ui;
+    let mut action: Option<TreeAction> = None;
+    let mut revealed = false;
+        // Track horizontal scrolling from mouse wheel or Shift+scroll,
+        // while explicitly disabling touchpad horizontal scrolling.
+        let (manual_scroll_x, is_over_tree) = ui.input(|i| {
+            let over = i
+                .pointer
+                .hover_pos()
+                .map_or(false, |p| card_rect.contains(p));
+            let mut dx = 0.0;
+            if over {
+                for event in &i.events {
+                    if let egui::Event::MouseWheel {
+                        unit,
+                        delta,
+                        modifiers,
+                    } = event
+                    {
+                        match unit {
+                            egui::MouseWheelUnit::Line | egui::MouseWheelUnit::Page => {
+                                let factor = if *unit == egui::MouseWheelUnit::Line {
+                                    40.0
+                                } else {
+                                    200.0
+                                };
+                                if modifiers.shift {
+                                    dx += (delta.x + delta.y) * factor;
+                                } else {
+                                    dx += delta.x * factor;
+                                }
+                            }
+                            egui::MouseWheelUnit::Point => {
+                                // Touchpad: disable horizontal scrolling unless Shift is explicitly held
+                                if modifiers.shift {
+                                    dx += delta.x + delta.y;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            (dx, over)
+        });
+
+        let visible_w = (card_rect.width() - 16.0).max(50.0);
+        let text_exceeds_width = *pane.content_width > visible_w + 2.0;
+        let scroll_content_w = if text_exceeds_width {
+            *pane.content_width + 16.0
+        } else {
+            visible_w
+        };
+        let max_scroll_x = if text_exceeds_width {
+            scroll_content_w - visible_w
+        } else {
+            0.0
+        };
+
+        if !text_exceeds_width {
+            *pane.scroll_x = 0.0;
+        } else if is_over_tree && manual_scroll_x != 0.0 {
+            *pane.scroll_x =
+                (*pane.scroll_x - manual_scroll_x).clamp(0.0, max_scroll_x);
+        } else {
+            *pane.scroll_x = (*pane.scroll_x).clamp(0.0, max_scroll_x);
+        }
+
+        // Keep the full horizontal track inside the clipped pane.
+        let scrollbar_h = if text_exceeds_width {
+            10.0 + ui.spacing().item_spacing.y
+        } else {
+            0.0
+        };
+        let available_h = ui.available_height();
+        let sa_h = (available_h - scrollbar_h).max(30.0);
+
+        let mut max_row_w = 0.0f32;
+        let mut current_match_rect = None;
+
+        egui::ScrollArea::vertical()
+            .id_salt((pane.salt, "vert", pane.id))
+            .drag_to_scroll(false)
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .auto_shrink([false; 2])
+            .max_height(sa_h)
+            .show(ui, |ui| {
+                let horiz_offset = *pane.scroll_x;
+                egui::ScrollArea::horizontal()
+                    .id_salt((pane.salt, "horiz", pane.id))
+                    .horizontal_scroll_offset(horiz_offset)
+                    .drag_to_scroll(false)
+                    .enable_scrolling(false)
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        if text_exceeds_width {
+                            ui.set_min_width(scroll_content_w);
+                        }
+                        render_tree_node(
+                            ui,
+                            pane.root,
+                            pane.root_path,
+                            pane.root_label,
+                            0,
+                            pane.collapsed,
+                            pane.search_query,
+                            pane.search_matches,
+                            pane.cur_match_path,
+                            pane.selected_path,
+                            colors,
+                            &mut action,
+                            &mut max_row_w,
+                            &mut current_match_rect,
+                        );
+                    });
+                // Issue the request outside the horizontal area so the vertical area handles it.
+                if pane.reveal_match {
+                    if let Some(rect) = current_match_rect {
+                        ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                        revealed = true;
+                    }
+                }
+            });
+
+        *pane.content_width = max_row_w;
+
+        if text_exceeds_width {
+            ui.add_space(2.0);
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+
+                let track_w = (ui.available_width() - 4.0).max(20.0);
+                let (track_rect, scroll_resp) = ui.allocate_exact_size(
+                    egui::vec2(track_w, 8.0),
+                    egui::Sense::click_and_drag(),
+                );
+                let scroll_resp = scroll_resp.on_hover_cursor(egui::CursorIcon::Default);
+
+                let thumb_w = ((visible_w / scroll_content_w) * track_w).clamp(24.0, track_w);
+                let scrollable_track = (track_w - thumb_w).max(1.0);
+
+                if scroll_resp.dragged() {
+                    let drag_x = scroll_resp.drag_delta().x;
+                    let delta_scroll = drag_x * (max_scroll_x / scrollable_track);
+                    *pane.scroll_x =
+                        (*pane.scroll_x + delta_scroll).clamp(0.0, max_scroll_x);
+                } else if scroll_resp.clicked() {
+                    if let Some(pos) = scroll_resp.interact_pointer_pos() {
+                        let target_ratio = ((pos.x - track_rect.min.x - thumb_w * 0.5)
+                            / scrollable_track)
+                            .clamp(0.0, 1.0);
+                        *pane.scroll_x =
+                            (target_ratio * max_scroll_x).clamp(0.0, max_scroll_x);
+                    }
+                }
+
+                let scroll_ratio = (*pane.scroll_x / max_scroll_x).clamp(0.0, 1.0);
+                let thumb_x = track_rect.min.x + scroll_ratio * scrollable_track;
+                let thumb_rect = egui::Rect::from_min_size(
+                    egui::pos2(thumb_x, track_rect.min.y + 1.0),
+                    egui::vec2(thumb_w, track_rect.height() - 2.0),
+                );
+
+                ui.painter().rect_filled(
+                    track_rect,
+                    egui::CornerRadius::same(4),
+                    p.subtle,
+                );
+
+                let thumb_color = if scroll_resp.is_pointer_button_down_on() {
+                    p.strong
+                } else if scroll_resp.hovered() {
+                    p.muted
+                } else {
+                    p.border
+                };
+                ui.painter().rect_filled(
+                    thumb_rect,
+                    egui::CornerRadius::same(3),
+                    thumb_color,
+                );
+            });
+        }
+
+    (action, revealed)
 }
 
 fn editor_row_height(ui: &egui::Ui, font_id: &egui::FontId, requested: f32) -> f32 {

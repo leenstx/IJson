@@ -27,7 +27,7 @@ fn main() -> eframe::Result<()> {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1150.0, 750.0])
-        .with_min_inner_size([650.0, 420.0])
+        .with_min_inner_size([800.0, 420.0])
         .with_title("IJson")
         .with_icon(app_icon());
     #[cfg(target_os = "macos")]

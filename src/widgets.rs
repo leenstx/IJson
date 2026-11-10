@@ -53,7 +53,7 @@ pub(crate) fn btn_redo(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
 }
 
 pub(crate) fn btn_compress(ui: &mut egui::Ui) -> egui::Response {
-    icon_button(ui, LucideIcon::FoldVertical, UiColors::current(ui).amber, "Minify (Single Line & Copy)")
+    icon_button(ui, LucideIcon::FoldVertical, UiColors::current(ui).amber, "Copy Minified JSON")
 }
 
 pub(crate) fn btn_simplify(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
@@ -79,6 +79,44 @@ pub(crate) fn btn_expand_all(ui: &mut egui::Ui) -> egui::Response {
 
 pub(crate) fn btn_collapse_all(ui: &mut egui::Ui) -> egui::Response {
     icon_button(ui, LucideIcon::ChevronsDownUp, UiColors::current(ui).strong, "Collapse All")
+}
+
+/// View/Edit switch: shows the current mode's icon (eye or pencil); a click flips it.
+pub(crate) fn btn_mode(ui: &mut egui::Ui, edit_mode: bool) -> egui::Response {
+    let p = UiColors::current(ui);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 24.0), egui::Sense::click());
+    draw_button_bg(ui, rect, &resp);
+    let (icon, color, tip) = if edit_mode {
+        (LucideIcon::PencilLine, p.blue, "Edit mode · click to view")
+    } else {
+        (LucideIcon::Eye, p.blue, "View mode · click to edit")
+    };
+    let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0));
+    draw_lucide_icon(ui.painter(), icon_rect, icon, color);
+    resp.on_hover_text(tr(ui.ctx(), tip))
+}
+
+/// Small borderless icon button used inside the search pill.
+pub(crate) fn mini_icon_button(ui: &mut egui::Ui, icon: LucideIcon, tip: &str) -> egui::Response {
+    let p = UiColors::current(ui);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(4), p.hover);
+    }
+    let color = if resp.hovered() { p.strong } else { p.muted };
+    let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(12.0, 12.0));
+    draw_lucide_icon(ui.painter(), icon_rect, icon, color);
+    resp.on_hover_text(tr(ui.ctx(), tip))
+}
+
+/// Thin divider between toolbar groups.
+pub(crate) fn toolbar_separator(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(9.0, 16.0), egui::Sense::hover());
+    ui.painter().vline(
+        rect.center().x,
+        rect.y_range(),
+        egui::Stroke::new(1.0, UiColors::current(ui).border),
+    );
 }
 
 pub(crate) fn icon_button(ui: &mut egui::Ui, icon: LucideIcon, hover: egui::Color32, tip: &str) -> egui::Response {

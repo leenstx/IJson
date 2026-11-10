@@ -84,6 +84,15 @@ pub(crate) struct JsonTab {
     pub(crate) editor_fold_starts: HashSet<usize>,
     /// Highlighted editor layout, reused while the text and style are unchanged.
     pub(crate) editor_galley_cache: Option<EditorGalleyCache>,
+    /// Edit mode shows only the text editor; View mode shows the tree and the selected node.
+    pub(crate) edit_mode: bool,
+    /// Right-hand tree in View mode: its own fold state and highlighted row.
+    pub(crate) node_collapsed: HashSet<String>,
+    pub(crate) node_selected_path: Option<String>,
+    pub(crate) node_scroll_x: f32,
+    pub(crate) node_content_width: f32,
+    /// Whether the copy badge belongs to the right-hand panel.
+    pub(crate) copy_notice_in_node: bool,
     pub(crate) request_loading: Option<RequestLoadingState>,
     pub(crate) copy_notice: Option<(String, std::time::Instant)>,
 
@@ -136,6 +145,12 @@ impl JsonTab {
             editor_folds: HashSet::new(),
             editor_fold_starts: HashSet::new(),
             editor_galley_cache: None,
+            edit_mode: false,
+            node_collapsed: HashSet::new(),
+            node_selected_path: None,
+            node_scroll_x: 0.0,
+            node_content_width: 0.0,
+            copy_notice_in_node: false,
             request_loading: None,
             copy_notice: None,
             undo_past: Vec::new(),
@@ -418,26 +433,15 @@ impl JsonTab {
         }
     }
 
-    pub(crate) fn compress_json(&mut self) {
-        if self.input.trim().is_empty() {
-            return;
-        }
-        self.remember_before_edit(false);
-        if let Some(v) = &self.parsed {
-            if let Ok(compressed) = serde_json::to_string(v) {
-                if compressed != self.input {
-                    self.editor_folds.clear();
-                    self.input = compressed;
-                    self.reparse();
-                    self.editor_scroll_x = 0.0;
-                    self.reset_editor_scroll = true;
-                }
-                if let Ok(mut cb) = arboard::Clipboard::new() {
-                    let _ = cb.set_text(self.input.clone());
-                }
-            }
-        }
-        self.note_edit_applied();
+    /// Copies the document as minified JSON without changing the editor.
+    pub(crate) fn copy_minified(&mut self) -> bool {
+        let Some(minified) = self.parsed.as_ref().and_then(|v| serde_json::to_string(v).ok())
+        else {
+            return false;
+        };
+        arboard::Clipboard::new()
+            .and_then(|mut cb| cb.set_text(minified))
+            .is_ok()
     }
 
     pub(crate) fn simplify_json(&mut self) {
@@ -629,6 +633,7 @@ impl JsonTab {
                         self.editor_folds.clear();
                         self.input = serde_json::to_string_pretty(&root).unwrap_or_default();
                         self.parsed = Some(root);
+                        self.revision = self.revision.wrapping_add(1);
                         self.note_source_input();
                         self.rebuild_editor_view();
                         self.dirty = true;
@@ -658,6 +663,7 @@ impl JsonTab {
                 self.editor_folds.clear();
                 self.input = serde_json::to_string_pretty(&root).unwrap_or_default();
                 self.parsed = Some(root);
+                self.revision = self.revision.wrapping_add(1);
                 self.note_source_input();
                 self.rebuild_editor_view();
                 self.dirty = true;
@@ -747,6 +753,7 @@ impl JsonTab {
             "name": self.name,
             "auto_name": self.auto_name,
             "pinned": self.pinned,
+            "edit_mode": self.edit_mode,
             "input": self.input,
             "source_input": self.source_input,
             "collapsed": collapsed,
@@ -786,6 +793,7 @@ pub(crate) fn tab_from_value(v: &Value, fallback_id: u64) -> Option<LoadedTab> {
     let mut tab = JsonTab::empty(id, name);
     tab.auto_name = auto_name;
     tab.pinned = v.get("pinned").and_then(|x| x.as_bool()).unwrap_or(false);
+    tab.edit_mode = v.get("edit_mode").and_then(|x| x.as_bool()).unwrap_or(false);
     tab.input = input;
     if let Some(lines) = v.get("editor_folds").and_then(|x| x.as_array()) {
         tab.editor_folds = lines

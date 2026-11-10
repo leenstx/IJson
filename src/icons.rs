@@ -31,6 +31,9 @@ pub(crate) enum LucideIcon {
     ChevronsDown,
     ChevronsUp,
     Pencil,
+    Eye,
+    PencilLine,
+    ChevronUp,
     X,
     ChevronRight,
     ChevronDown,
@@ -193,6 +196,16 @@ fn icon_elements(icon: LucideIcon) -> &'static [LucideElem] {
             LucideElem::Path("M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"),
             LucideElem::Path("m15 5 4 4"),
         ],
+        LucideIcon::Eye => &[
+            LucideElem::Path("M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"),
+            LucideElem::Circle(12.0, 12.0, 3.0),
+        ],
+        LucideIcon::PencilLine => &[
+            LucideElem::Path("M13 21h8"),
+            LucideElem::Path("m15 5 4 4"),
+            LucideElem::Path("M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"),
+        ],
+        LucideIcon::ChevronUp => &[LucideElem::Path("m18 15-6-6-6 6")],
         LucideIcon::X => &[
             LucideElem::Path("M18 6 6 18"),
             LucideElem::Path("m6 6 12 12"),
