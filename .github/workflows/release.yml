@@ -87,6 +87,54 @@ jobs:
           </plist>
           EOF
 
+      # 未签名的 .app 从网络下载后会被 Gatekeeper 判定为“已损坏”。
+      # 配置了 Developer ID 相关 secrets 时：正式签名 + 公证（用户可直接双击打开）；
+      # 否则退回 ad-hoc 签名（用户需在 系统设置 → 隐私与安全性 中点“仍要打开”）。
+      - name: Sign App Bundle
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          APP_PATH="target/${{ matrix.target }}/release/bundle/osx/IJson.app"
+
+          if [ -n "$MACOS_CERTIFICATE_P12" ] && [ -n "$MACOS_SIGNING_IDENTITY" ]; then
+            echo "Signing with Developer ID"
+            KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+            KEYCHAIN_PASSWORD="$(uuidgen)"
+            echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+            security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN"
+            security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+            security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERTIFICATE_PASSWORD" \
+              -A -t cert -f pkcs12 -k "$KEYCHAIN"
+            security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+            security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+            rm -f "$RUNNER_TEMP/cert.p12"
+
+            codesign --force --options runtime --timestamp \
+              --sign "$MACOS_SIGNING_IDENTITY" "$APP_PATH"
+
+            if [ -n "$APPLE_ID" ] && [ -n "$APPLE_TEAM_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
+              echo "Notarizing"
+              ditto -c -k --keepParent "$APP_PATH" "$RUNNER_TEMP/notarize.zip"
+              xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+                --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+                --password "$APPLE_APP_PASSWORD" --wait
+              xcrun stapler staple "$APP_PATH"
+            else
+              echo "::warning::Notarization secrets not set; app is signed but not notarized"
+            fi
+          else
+            echo "::warning::No Developer ID certificate configured; using ad-hoc signature"
+            codesign --force --deep --sign - "$APP_PATH"
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
       - name: Package DMG and Zip
         run: |
           APP_PATH="target/${{ matrix.target }}/release/bundle/osx/IJson.app"

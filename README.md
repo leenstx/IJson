@@ -90,6 +90,13 @@ cargo bundle --release
 ```
 The generated application will be located in `target/release/bundle/osx/IJson.app`.
 
+#### Opening a downloaded build on macOS
+
+Release builds are not notarized by Apple, so macOS blocks them on first launch. Pick the DMG matching your Mac (`arm64` for Apple Silicon, `x64` for Intel), drag IJson to Applications, then either:
+
+- open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway**, or
+- run `xattr -cr /Applications/IJson.app` in Terminal.
+
 ### License
 
 This project is licensed under the [GNU General Public License v3.0](LICENSE).
@@ -173,6 +180,13 @@ cargo install cargo-bundle
 cargo bundle --release
 ```
 打包产物位于 `target/release/bundle/osx/IJson.app`。
+
+#### 在 macOS 上打开下载的安装包
+
+发布版本未经过 Apple 公证，首次启动会被 macOS 拦截。请下载与你的 Mac 对应的 DMG（Apple 芯片选 `arm64`，Intel 选 `x64`），将 IJson 拖入“应用程序”后，任选其一：
+
+- 先打开一次，然后在 **系统设置 → 隐私与安全性** 中点击 **仍要打开**；或
+- 在终端执行 `xattr -cr /Applications/IJson.app`。
 
 ### 开源协议
 
