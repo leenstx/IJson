@@ -9,6 +9,7 @@ mod highlight;
 mod icons;
 mod i18n;
 mod image_preview;
+mod keymap;
 mod model;
 mod tab;
 mod theme;

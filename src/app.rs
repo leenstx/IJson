@@ -20,11 +20,12 @@ use crate::tab::{
     TAB_RAIL_WIDTH,
 };
 use crate::i18n::{tr, Language};
+use crate::keymap::{record_key, Action, Keymap, Recorded};
 use crate::theme::{ThemeColors, ThemeMode, UiColors};
 use crate::tree::render_tree_node;
 use crate::widgets::{
     btn_clear, mini_icon_button, btn_mode, toolbar_separator, btn_collapse_all, btn_compare, btn_compress, btn_copy, btn_expand_all, btn_format,
-    btn_new_tab, btn_redo, btn_simplify, btn_sort, btn_undo, field_caption, info_pill, menu_item,
+    btn_new_tab, btn_redo, btn_sidebar, segmented, compact_button, btn_simplify, btn_sort, btn_undo, menu_item,
     menu_separator, modal_button, type_chip,
 };
 
@@ -38,6 +39,16 @@ pub(crate) struct JsonViewerApp {
     suppress_close_frames: u8,
 
     tab_rail_width: f32,
+    sidebar_hidden: bool,
+    keymap: Keymap,
+    /// Keyboard shortcut settings panel.
+    keymap_open: bool,
+    /// The action whose new shortcut is being recorded.
+    keymap_recording: Option<Action>,
+    /// Message after a rebind took a shortcut from another action.
+    keymap_note: Option<String>,
+    /// View mode: the right (selected node) card has focus instead of the tree.
+    node_focused: bool,
     left_panel_width: f32,
     // False until the user drags the splitter. Then the saved width is restored.
     split_customized: bool,
@@ -79,6 +90,12 @@ impl JsonViewerApp {
             reveal_active: false,
             suppress_close_frames: 0,
             tab_rail_width: TAB_RAIL_WIDTH,
+            sidebar_hidden: false,
+            keymap: Keymap::default(),
+            keymap_open: false,
+            keymap_recording: None,
+            keymap_note: None,
+            node_focused: false,
             left_panel_width: 380.0,
             split_customized: false,
             language: Language::English,
@@ -91,6 +108,8 @@ impl JsonViewerApp {
             window_settle_frames: 0,
         };
         app.load_cache();
+        // ⌘+ / ⌘- are ours (expand / collapse all), not egui's zoom.
+        ctx.options_mut(|o| o.zoom_with_keyboard = false);
         app.language.apply(ctx);
         app.theme_mode.apply(ctx);
         let font_choice = app.fonts.selected;
@@ -139,8 +158,15 @@ impl JsonViewerApp {
         }
         if let Some(width) = v.get("tab_rail_width").and_then(Value::as_f64) {
             if width.is_finite() {
-                self.tab_rail_width = width.clamp(120.0, 400.0) as f32;
+                self.tab_rail_width = width.clamp(160.0, 400.0) as f32;
             }
+        }
+        self.sidebar_hidden = v
+            .get("sidebar_hidden")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if let Some(keymap) = v.get("keymap") {
+            self.keymap = Keymap::from_json(keymap);
         }
         self.split_customized = v
             .get("split_customized")
@@ -252,6 +278,8 @@ impl JsonViewerApp {
             "next_id": self.next_id,
             "tabs": tabs,
             "tab_rail_width": self.tab_rail_width,
+            "sidebar_hidden": self.sidebar_hidden,
+            "keymap": self.keymap.to_json(),
             "left_panel_width": self.left_panel_width,
             "split_customized": self.split_customized,
             "language": self.language.code(),
@@ -589,85 +617,63 @@ impl JsonViewerApp {
         }
     }
 
-    fn render_split_handle(
-        &mut self,
-        ui: &mut egui::Ui,
-        panel_rect: egui::Rect,
-        pane_rect: egui::Rect,
-    ) {
-        // Overlay the divider hit area so resizing needs no visible gap.
-        let handle_rect = egui::Rect::from_min_size(
-            egui::pos2(panel_rect.left() + self.left_panel_width - 4.0, panel_rect.top()),
-            egui::vec2(8.0, panel_rect.height()),
+    /// Drag handle in the gap between the two cards.
+    fn render_split_handle(&mut self, ui: &mut egui::Ui, cards_rect: egui::Rect) {
+        let x = cards_rect.left() + self.left_panel_width;
+        let handle_rect = egui::Rect::from_center_size(
+            egui::pos2(x, cards_rect.center().y),
+            egui::vec2(CARD_GAP + 4.0, cards_rect.height()),
         );
-        let response = ui.interact(
-            handle_rect,
-            ui.id().with("split_handle"),
-            egui::Sense::drag(),
-        );
+        let response = ui.interact(handle_rect, ui.id().with("split_handle"), egui::Sense::drag());
         if response.dragged() {
             self.split_customized = true;
             self.left_panel_width += response.drag_delta().x;
             self.cache_dirty = true;
         }
-        let active = response.hovered() || response.dragged();
-        if active {
+        if response.contains_pointer() || response.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         }
-        // Use the same vertical bounds as both scrollable panes.
-        let bar = egui::Rect::from_center_size(
-            egui::pos2(handle_rect.center().x, pane_rect.center().y),
-            egui::vec2(if active { 2.0 } else { 1.0 }, pane_rect.height()),
-        );
-        let p = UiColors::current(ui);
-        ui.painter().rect_filled(
-            bar,
-            egui::CornerRadius::same(1),
-            if active { p.blue } else { p.border },
-        );
     }
 
     fn render_comparison(
         &mut self,
         ui: &mut egui::Ui,
-        panel_rect: egui::Rect,
+        cards_rect: egui::Rect,
+        bar_rect: egui::Rect,
+        bar_left: f32,
         colors: ThemeColors,
     ) {
-        let total_w = panel_rect.width();
+        let total_w = cards_rect.width();
         if !self.split_customized {
             self.left_panel_width = total_w * 0.5;
         }
         // Both toolbars must fit their eight buttons at the minimum window size.
         self.left_panel_width = self
             .left_panel_width
-            .clamp(232.0, (total_w - 232.0).max(232.0));
-        let left_w = self.left_panel_width;
-        let right_w = (total_w - left_w).max(100.0);
-        let card_top = panel_rect.top() + 34.0;
-        let card_h = (panel_rect.bottom() - card_top).max(50.0);
-        let right_x = panel_rect.left() + left_w;
-        let background_rect = egui::Rect::from_min_size(
-            egui::pos2(panel_rect.left(), card_top),
-            egui::vec2(total_w, card_h),
-        );
-        ui.painter().rect_filled(
-            background_rect,
-            egui::CornerRadius::ZERO,
-            colors.ui.surface,
-        );
-        let pane_rect = background_rect.shrink2(egui::vec2(0.0, 8.0));
+            .clamp(240.0, (total_w - 240.0).max(240.0));
+        let (left_card, right_card) = split_cards(cards_rect, self.left_panel_width);
+        let pane_rect = cards_rect;
+        let p = colors.ui;
+        let right_active = self.tabs[self.active]
+            .comparison
+            .as_ref()
+            .is_some_and(|c| c.right_active);
+        let left_body =
+            draw_card(ui, left_card, !right_active);
+        let right_body = draw_card(ui, right_card, right_active);
 
         // Temporarily detach the right document to reuse the same editor for both sides.
         let tab = &mut self.tabs[self.active];
         let mut comparison = tab.comparison.take().unwrap();
-        let p = colors.ui;
 
-        for (document, x, width) in [
-            (&mut *tab, panel_rect.left(), left_w),
-            (&mut comparison.right, right_x, right_w),
+        for (document, x, right) in [
+            (&mut *tab, left_card.left().max(bar_left), left_card.right()),
+            (&mut comparison.right, right_card.left(), right_card.right()),
         ] {
-            let rect =
-                egui::Rect::from_min_size(egui::pos2(x, panel_rect.top()), egui::vec2(width, 28.0));
+            let rect = egui::Rect::from_min_max(
+                egui::pos2(x, bar_rect.top()),
+                egui::pos2(right.max(x + 1.0), bar_rect.bottom()),
+            );
             let mut toolbar = ui.new_child(
                 egui::UiBuilder::default()
                     .id_salt(("editor_toolbar", document.id))
@@ -735,26 +741,10 @@ impl JsonViewerApp {
             ui.ctx().request_repaint();
         }
 
-        for (document, x, width, lines, color) in [
-            (
-                &mut *tab,
-                panel_rect.left(),
-                left_w,
-                comparison.removed.as_slice(),
-                p.danger_bg,
-            ),
-            (
-                &mut comparison.right,
-                right_x,
-                right_w,
-                comparison.added.as_slice(),
-                p.added,
-            ),
+        for (document, rect, lines, color) in [
+            (&mut *tab, left_body, comparison.removed.as_slice(), p.danger_bg),
+            (&mut comparison.right, right_body, comparison.added.as_slice(), p.added),
         ] {
-            let rect = egui::Rect::from_min_size(
-                egui::pos2(x, pane_rect.top()),
-                egui::vec2(width, pane_rect.height()),
-            );
             let mut editor_ui = ui.new_child(
                 egui::UiBuilder::default()
                     .id_salt(("compare_editor", document.id))
@@ -782,348 +772,589 @@ impl JsonViewerApp {
         if sync_hint {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
         }
-        self.render_split_handle(ui, panel_rect, pane_rect);
+        self.render_split_handle(ui, cards_rect);
     }
 
-    fn render_top_bar(&mut self, ctx: &egui::Context, colors: ThemeColors) {
-        let p = colors.ui;
-        egui::TopBottomPanel::top("app_window_titlebar")
-            .exact_height(30.0)
-            .show_separator_line(false)
-            .frame(
-                egui::Frame::default()
-                    .fill(p.titlebar)
-                    .inner_margin(egui::Margin {
-                        left: 10,
-                        right: 12,
-                        top: 3,
-                        bottom: 3,
-                    }),
-            )
-            .show(ctx, |ui| {
-                let rect = ui.available_rect_before_wrap();
+    /// Theme, language and font controls shown in the sidebar footer.
+    fn render_settings(&mut self, controls_ui: &mut egui::Ui, p: UiColors) {
+        // 1. Theme toggle button (left edge)
+        let theme_icon = self.theme_mode.icon();
+        let theme_tip = self.theme_mode.hint();
+        let (btn_rect, resp) = controls_ui.allocate_exact_size(egui::vec2(24.0, 22.0), egui::Sense::click());
+        if resp.hovered() {
+            controls_ui.painter().rect_filled(btn_rect, egui::CornerRadius::same(4), p.hover);
+        }
+        let color = if resp.hovered() { p.strong } else { p.muted };
+        let icon_rect = egui::Rect::from_center_size(btn_rect.center(), egui::vec2(15.0, 15.0));
+        draw_lucide_icon(controls_ui.painter(), icon_rect, theme_icon, color);
+        if resp.clicked() {
+            self.theme_mode = self.theme_mode.next();
+            self.theme_mode.apply(controls_ui.ctx());
+            self.cache_dirty = true;
+        }
+        resp.on_hover_text(tr(controls_ui.ctx(), theme_tip))
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
 
-                // Window drag interaction on empty titlebar space
-                let drag_resp = ui.interact(rect, ui.id().with("titlebar_drag"), egui::Sense::click_and_drag());
-                if drag_resp.dragged() {
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        // Language and font sit at the right edge of the footer.
+        let mut right_ui = controls_ui.new_child(
+            egui::UiBuilder::default()
+                .max_rect(controls_ui.max_rect())
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+        );
+        right_ui.spacing_mut().item_spacing = controls_ui.spacing().item_spacing;
+        let controls_ui = &mut right_ui;
+
+        // 2. Language toggle button (rightmost)
+        let lang_tip = match self.language {
+            Language::English => "Language: English · click for 中文",
+            Language::Chinese => "语言：中文 · 点击切换为 English",
+        };
+        let (btn_rect, resp) = controls_ui.allocate_exact_size(egui::vec2(24.0, 22.0), egui::Sense::click());
+        if resp.hovered() {
+            controls_ui.painter().rect_filled(btn_rect, egui::CornerRadius::same(4), p.hover);
+        }
+        let color = if resp.hovered() { p.strong } else { p.muted };
+        draw_lucide_icon(
+            controls_ui.painter(),
+            egui::Rect::from_center_size(btn_rect.center(), egui::vec2(15.0, 15.0)),
+            LucideIcon::Languages,
+            color,
+        );
+        if resp.clicked() {
+            self.language = self.language.toggle();
+            self.language.apply(controls_ui.ctx());
+            self.cache_dirty = true;
+        }
+        resp.on_hover_text(lang_tip)
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+        // 3. Global font picker (left of language), transparent when idle.
+        let popup_id = controls_ui.id().with("font_picker");
+        let was_open = controls_ui.memory(|mem| mem.is_popup_open(popup_id));
+        let (btn_rect, resp) = controls_ui.allocate_exact_size(
+            egui::vec2(24.0, 22.0),
+            egui::Sense::click(),
+        );
+        if resp.clicked() {
+            controls_ui.memory_mut(|mem| mem.toggle_popup(popup_id));
+            if !was_open {
+                self.fonts.search.clear();
+            }
+        }
+        let open = controls_ui.memory(|mem| mem.is_popup_open(popup_id));
+        if resp.hovered() || open {
+            controls_ui.painter().rect_filled(
+                btn_rect,
+                egui::CornerRadius::same(4),
+                p.hover,
+            );
+        }
+        draw_lucide_icon(
+            controls_ui.painter(),
+            egui::Rect::from_center_size(btn_rect.center(), egui::vec2(15.0, 15.0)),
+            LucideIcon::Type,
+            if resp.hovered() || open { p.strong } else { p.muted },
+        );
+        let mut picked = None;
+        egui::popup::popup_above_or_below_widget(
+            &controls_ui,
+            popup_id,
+            &resp,
+            egui::AboveOrBelow::Above,
+            egui::PopupCloseBehavior::CloseOnClickOutside,
+            |ui| {
+                ui.set_width(300.0);
+                ui.label(
+                    egui::RichText::new(tr(ui.ctx(), "Global font"))
+                        .small()
+                        .color(p.muted),
+                );
+                let search = ui.add(
+                    egui::TextEdit::singleline(&mut self.fonts.search)
+                        .hint_text(tr(ui.ctx(), "Search fonts…"))
+                        .desired_width(f32::INFINITY),
+                );
+                if resp.clicked() && !was_open {
+                    search.request_focus();
                 }
-                if drag_resp.double_clicked() {
-                    let is_max = ui.input(|i| i.viewport().maximized.unwrap_or(false));
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!is_max));
+                let query = self.fonts.search.trim().to_lowercase();
+                let mut filtered: Vec<usize> = self
+                    .fonts
+                    .available
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, choice)| choice.search_name.contains(&query))
+                    .map(|(index, _)| index)
+                    .collect();
+                if let Some(position) = filtered
+                    .iter()
+                    .position(|&index| index == self.fonts.selected)
+                {
+                    filtered[..=position].rotate_right(1);
                 }
-
-                // Window Title (placed next to macOS traffic lights)
-                #[cfg(target_os = "macos")]
-                let traffic_light_padding = 74.0;
-                #[cfg(not(target_os = "macos"))]
-                let traffic_light_padding = 4.0;
-
-                let title_rect = egui::Rect::from_min_size(
-                    egui::pos2(rect.left() + traffic_light_padding, rect.top()),
-                    egui::vec2(120.0, rect.height()),
+                let row_h = ui.spacing().interact_size.y.max(
+                    ui.text_style_height(&egui::TextStyle::Button)
+                        + 2.0 * ui.spacing().button_padding.y,
                 );
-                let mut title_ui = ui.new_child(
-                    egui::UiBuilder::default()
-                        .max_rect(title_rect)
-                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                );
-                title_ui.add(
-                    egui::Label::new(
-                        egui::RichText::new("IJson")
-                            .size(12.5)
-                            .strong()
-                            .color(p.muted),
-                    )
-                    .selectable(false),
-                );
-
-                // Right side: Font picker, Language toggle and Theme toggle.
-                let controls_rect = egui::Rect::from_min_size(
-                    egui::pos2(rect.right() - 124.0, rect.top()),
-                    egui::vec2(124.0, rect.height()),
-                );
-                let mut controls_ui = ui.new_child(
-                    egui::UiBuilder::default()
-                        .max_rect(controls_rect)
-                        .layout(egui::Layout::right_to_left(egui::Align::Center)),
-                );
-                controls_ui.spacing_mut().item_spacing = egui::vec2(12.0, 0.0);
-
-                // 1. Theme toggle button (rightmost)
-                let theme_icon = self.theme_mode.icon();
-                let theme_tip = self.theme_mode.hint();
-                let (btn_rect, resp) = controls_ui.allocate_exact_size(egui::vec2(24.0, 22.0), egui::Sense::click());
-                if resp.hovered() {
-                    controls_ui.painter().rect_filled(btn_rect, egui::CornerRadius::same(4), p.hover);
+                let list_h = (ui.ctx().screen_rect().height() - 160.0).clamp(80.0, 320.0);
+                // Virtualize the system font list; only visible rows are laid out.
+                let mut list = egui::ScrollArea::vertical()
+                    .id_salt("system_font_list")
+                    .max_height(list_h)
+                    .auto_shrink([false, true]);
+                if (resp.clicked() && !was_open) || search.changed() {
+                    list = list.vertical_scroll_offset(0.0);
                 }
-                let color = if resp.hovered() { p.strong } else { p.muted };
-                let icon_rect = egui::Rect::from_center_size(btn_rect.center(), egui::vec2(15.0, 15.0));
-                draw_lucide_icon(controls_ui.painter(), icon_rect, theme_icon, color);
-                if resp.clicked() {
-                    self.theme_mode = self.theme_mode.next();
-                    self.theme_mode.apply(controls_ui.ctx());
-                    self.cache_dirty = true;
+                list.show_rows(ui, row_h, filtered.len(), |ui, rows| {
+                    ui.with_layout(
+                        egui::Layout::top_down_justified(egui::Align::Min),
+                        |ui| {
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                            for row in rows {
+                                let index = filtered[row];
+                                let choice = &self.fonts.available[index];
+                                if ui
+                                    .add(egui::SelectableLabel::new(
+                                        self.fonts.selected == index,
+                                        tr(ui.ctx(), &choice.label),
+                                    ))
+                                    .on_hover_text(&choice.label)
+                                    .clicked()
+                                {
+                                    picked = Some(index);
+                                }
+                            }
+                        },
+                    );
+                });
+                if filtered.is_empty() {
+                    ui.label(tr(ui.ctx(), "No matching fonts"));
                 }
-                resp.on_hover_text(tr(controls_ui.ctx(), theme_tip))
-                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-
-                // 2. Language toggle button (left of theme)
-                let lang_label = self.language.label();
-                let lang_tip = match self.language {
-                    Language::English => "Language: English · click for 中文",
-                    Language::Chinese => "语言：中文 · 点击切换为 English",
-                };
-                let (btn_rect, resp) = controls_ui.allocate_exact_size(egui::vec2(46.0, 22.0), egui::Sense::click());
-                if resp.hovered() {
-                    controls_ui.painter().rect_filled(btn_rect, egui::CornerRadius::same(4), p.hover);
+                ui.separator();
+                ui.label(tr(ui.ctx(), "Preview: Aa 0123 中文"));
+                if let Some(error) = &self.fonts.error {
+                    ui.colored_label(p.danger, tr(ui.ctx(), "Unable to load font"));
+                    ui.label(egui::RichText::new(error).small().color(p.muted));
                 }
-                let color = if resp.hovered() { p.strong } else { p.muted };
-                controls_ui.painter().text(
-                    btn_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    lang_label,
-                    egui::FontId::proportional(12.5),
-                    color,
-                );
-                if resp.clicked() {
-                    self.language = self.language.toggle();
-                    self.language.apply(controls_ui.ctx());
-                    self.cache_dirty = true;
-                }
-                resp.on_hover_text(lang_tip)
-                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-
-                // 3. Global font picker (left of language), transparent when idle.
-                let popup_id = controls_ui.id().with("font_picker");
-                let was_open = controls_ui.memory(|mem| mem.is_popup_open(popup_id));
-                let (btn_rect, resp) = controls_ui.allocate_exact_size(
-                    egui::vec2(24.0, 22.0),
-                    egui::Sense::click(),
-                );
-                if resp.clicked() {
-                    controls_ui.memory_mut(|mem| mem.toggle_popup(popup_id));
-                    if !was_open {
-                        self.fonts.search.clear();
+            },
+        );
+        if let Some(index) = picked {
+            if index == self.fonts.selected {
+                controls_ui.memory_mut(|mem| mem.close_popup());
+            } else if self.fonts.apply(controls_ui.ctx(), index) {
+                // Re-measure cached content widths without changing documents.
+                for tab in &mut self.tabs {
+                    tab.editor_content_width = 0.0;
+                    tab.tree_content_width = 0.0;
+                    if let Some(comparison) = &mut tab.comparison {
+                        comparison.right.editor_content_width = 0.0;
+                        comparison.right.tree_content_width = 0.0;
                     }
                 }
-                let open = controls_ui.memory(|mem| mem.is_popup_open(popup_id));
-                if resp.hovered() || open {
-                    controls_ui.painter().rect_filled(
-                        btn_rect,
-                        egui::CornerRadius::same(4),
-                        p.hover,
+                self.cache_dirty = true;
+                controls_ui.memory_mut(|mem| mem.close_popup());
+            }
+        }
+        resp.on_hover_text(format!(
+            "{}: {}",
+            tr(controls_ui.ctx(), "Global font"),
+            tr(controls_ui.ctx(), &self.fonts.available[self.fonts.selected].label),
+        ))
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+        // 4. Keyboard shortcuts (left of font).
+        let (btn_rect, resp) = controls_ui.allocate_exact_size(egui::vec2(24.0, 22.0), egui::Sense::click());
+        if resp.hovered() || self.keymap_open {
+            controls_ui.painter().rect_filled(btn_rect, egui::CornerRadius::same(4), p.hover);
+        }
+        draw_lucide_icon(
+            controls_ui.painter(),
+            egui::Rect::from_center_size(btn_rect.center(), egui::vec2(14.0, 14.0)),
+            LucideIcon::Command,
+            if resp.hovered() || self.keymap_open { p.strong } else { p.muted },
+        );
+        if resp.clicked() {
+            self.keymap_open = true;
+            self.keymap_recording = None;
+            self.keymap_note = None;
+            // Keys pressed while the panel is open must not reach the editor or search box.
+            controls_ui.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+        }
+        resp.on_hover_text(tr(controls_ui.ctx(), "Keyboard shortcuts"))
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+    }
+
+    /// While the shortcut panel is open: records the next key press for the selected row
+    /// (or closes the panel on Esc). Runs before other handlers so they never see the keys.
+    fn capture_keymap_keys(&mut self, ctx: &egui::Context) {
+        // Read the next key press for the row being recorded, before anything else sees it.
+        if let Some(action) = self.keymap_recording {
+            match record_key(ctx) {
+                Some(Recorded::Shortcut(sc)) => {
+                    self.keymap_note = self.keymap.set(action, Some(sc)).map(|other| {
+                        format!(
+                            "{} {} “{}”",
+                            sc.label(),
+                            tr(ctx, "was removed from"),
+                            tr(ctx, other.label())
+                        )
+                    });
+                    self.keymap_recording = None;
+                    self.cache_dirty = true;
+                }
+                Some(Recorded::Clear) => {
+                    self.keymap.set(action, None);
+                    self.keymap_recording = None;
+                    self.keymap_note = None;
+                    self.cache_dirty = true;
+                }
+                Some(Recorded::Cancel) => self.keymap_recording = None,
+                None => {}
+            }
+        } else if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.keymap_open = false;
+        }
+
+    }
+
+    /// Keyboard shortcut settings: one row per action; click a shortcut, then press keys.
+    fn render_keymap_panel(&mut self, ctx: &egui::Context) {
+        if !self.keymap_open {
+            return;
+        }
+        let p = UiColors::from_ctx(ctx);
+        let dark = ctx.theme() == egui::Theme::Dark;
+        let screen = ctx.screen_rect();
+        let mut close = false;
+
+        egui::Area::new(egui::Id::new("keymap_backdrop"))
+            .order(egui::Order::Middle)
+            .fixed_pos(screen.min)
+            .interactable(true)
+            .show(ctx, |ui| {
+                let resp = ui.allocate_rect(screen, egui::Sense::click());
+                ui.painter().rect_filled(
+                    screen,
+                    0.0,
+                    egui::Color32::from_black_alpha(if dark { 90 } else { 30 }),
+                );
+                if resp.clicked() {
+                    close = true;
+                }
+            });
+
+        let width = 520.0;
+        let row_h = 38.0;
+        let list_h = (screen.height() - 220.0)
+            .clamp(160.0, row_h * Action::ALL.len() as f32 + 2.0);
+        egui::Window::new("keymap_panel")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .movable(true)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -8.0))
+            .default_width(width)
+            // Same backdrop as the main window: soft gray with the window glow,
+            // and the list as a white card on top.
+            .frame(
+                egui::Frame::window(&ctx.style())
+                    .fill(if dark { p.canvas } else { egui::Color32::from_rgb(243, 243, 245) })
+                    .inner_margin(egui::Margin::symmetric(18, 16)),
+            )
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                // Last frame's window rect; the glow goes under this frame's content.
+                if let Some(rect) = ui.ctx().memory(|m| m.area_rect(egui::Id::new("keymap_panel"))) {
+                    paint_glow_rect(
+                        ui.ctx(),
+                        ui.painter(),
+                        rect.shrink(1.0),
+                        egui::CornerRadius::same(13),
+                        Glow::Backdrop,
                     );
                 }
-                controls_ui.painter().text(
-                    btn_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "Aa",
-                    egui::FontId::proportional(12.5),
-                    if resp.hovered() || open { p.strong } else { p.muted },
-                );
-                let mut picked = None;
-                egui::popup_below_widget(
-                    &controls_ui,
-                    popup_id,
-                    &resp,
-                    egui::PopupCloseBehavior::CloseOnClickOutside,
-                    |ui| {
-                        ui.set_width(300.0);
-                        ui.label(
-                            egui::RichText::new(tr(ui.ctx(), "Global font"))
-                                .small()
-                                .color(p.muted),
-                        );
-                        let search = ui.add(
-                            egui::TextEdit::singleline(&mut self.fonts.search)
-                                .hint_text(tr(ui.ctx(), "Search fonts…"))
-                                .desired_width(f32::INFINITY),
-                        );
-                        if resp.clicked() && !was_open {
-                            search.request_focus();
-                        }
-                        let query = self.fonts.search.trim().to_lowercase();
-                        let mut filtered: Vec<usize> = self
-                            .fonts
-                            .available
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, choice)| choice.search_name.contains(&query))
-                            .map(|(index, _)| index)
-                            .collect();
-                        if let Some(position) = filtered
-                            .iter()
-                            .position(|&index| index == self.fonts.selected)
-                        {
-                            filtered[..=position].rotate_right(1);
-                        }
-                        let row_h = ui.spacing().interact_size.y.max(
-                            ui.text_style_height(&egui::TextStyle::Button)
-                                + 2.0 * ui.spacing().button_padding.y,
-                        );
-                        let list_h = (ui.ctx().screen_rect().height() - 160.0).clamp(80.0, 320.0);
-                        // Virtualize the system font list; only visible rows are laid out.
-                        let mut list = egui::ScrollArea::vertical()
-                            .id_salt("system_font_list")
-                            .max_height(list_h)
-                            .auto_shrink([false, true]);
-                        if (resp.clicked() && !was_open) || search.changed() {
-                            list = list.vertical_scroll_offset(0.0);
-                        }
-                        list.show_rows(ui, row_h, filtered.len(), |ui, rows| {
-                            ui.with_layout(
-                                egui::Layout::top_down_justified(egui::Align::Min),
-                                |ui| {
-                                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                                    for row in rows {
-                                        let index = filtered[row];
-                                        let choice = &self.fonts.available[index];
-                                        if ui
-                                            .add(egui::SelectableLabel::new(
-                                                self.fonts.selected == index,
-                                                tr(ui.ctx(), &choice.label),
-                                            ))
-                                            .on_hover_text(&choice.label)
-                                            .clicked()
-                                        {
-                                            picked = Some(index);
-                                        }
-                                    }
-                                },
-                            );
-                        });
-                        if filtered.is_empty() {
-                            ui.label(tr(ui.ctx(), "No matching fonts"));
-                        }
-                        ui.separator();
-                        ui.label(tr(ui.ctx(), "Preview: Aa 0123 中文"));
-                        if let Some(error) = &self.fonts.error {
-                            ui.colored_label(p.danger, tr(ui.ctx(), "Unable to load font"));
-                            ui.label(egui::RichText::new(error).small().color(p.muted));
-                        }
-                    },
-                );
-                if let Some(index) = picked {
-                    if index == self.fonts.selected {
-                        controls_ui.memory_mut(|mem| mem.close_popup());
-                    } else if self.fonts.apply(controls_ui.ctx(), index) {
-                        // Re-measure cached content widths without changing documents.
-                        for tab in &mut self.tabs {
-                            tab.editor_content_width = 0.0;
-                            tab.tree_content_width = 0.0;
-                            if let Some(comparison) = &mut tab.comparison {
-                                comparison.right.editor_content_width = 0.0;
-                                comparison.right.tree_content_width = 0.0;
-                            }
-                        }
-                        self.cache_dirty = true;
-                        controls_ui.memory_mut(|mem| mem.close_popup());
-                    }
-                }
-                resp.on_hover_text(format!(
-                    "{}: {}",
-                    tr(controls_ui.ctx(), "Global font"),
-                    tr(controls_ui.ctx(), &self.fonts.available[self.fonts.selected].label),
-                ))
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                ui.set_width(width);
+                ui.spacing_mut().item_spacing.y = 0.0;
 
-                // Subtle bottom border separating titlebar from workspace below
-                let clip = ui.clip_rect();
-                ui.painter().hline(
-                    clip.x_range(),
-                    clip.bottom() - 0.5,
-                    egui::Stroke::new(1.0, p.border),
+                // Header: title and close.
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(tr(ui.ctx(), "Keyboard Shortcuts"))
+                            .size(14.5)
+                            .strong()
+                            .color(p.strong),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+                        if resp.hovered() {
+                            ui.painter().rect_filled(rect, egui::CornerRadius::same(6), p.hover);
+                        }
+                        draw_lucide_icon(
+                            ui.painter(),
+                            rect.shrink(6.0),
+                            LucideIcon::X,
+                            if resp.hovered() { p.strong } else { p.muted },
+                        );
+                        if resp.clicked() {
+                            close = true;
+                        }
+                    });
+                });
+                ui.add_space(12.0);
+
+                // Grouped list, like a macOS Settings section.
+                let group = egui::Frame::default()
+                    .fill(p.surface)
+                    .stroke(egui::Stroke::new(
+                        0.5,
+                        if dark {
+                            egui::Color32::from_white_alpha(28)
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(15, 23, 42, 30)
+                        },
+                    ))
+                    .corner_radius(egui::CornerRadius::same(10))
+                    .shadow(egui::epaint::Shadow {
+                        offset: [0, 1],
+                        blur: 6,
+                        spread: 0,
+                        color: egui::Color32::from_black_alpha(if dark { 60 } else { 10 }),
+                    })
+                    .inner_margin(egui::Margin::symmetric(14, 1));
+                group.show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("keymap_list")
+                        .max_height(list_h)
+                        .min_scrolled_height(list_h)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            for (i, action) in Action::ALL.iter().copied().enumerate() {
+                                let row_w = ui.available_width();
+                                let (row, row_resp) =
+                                    ui.allocate_exact_size(egui::vec2(row_w, row_h), egui::Sense::click());
+                                if i > 0 {
+                                    ui.painter().hline(
+                                        row.x_range(),
+                                        row.top(),
+                                        egui::Stroke::new(1.0, p.border.gamma_multiply(0.6)),
+                                    );
+                                }
+                                ui.painter().text(
+                                    egui::pos2(row.left(), row.center().y),
+                                    egui::Align2::LEFT_CENTER,
+                                    tr(ui.ctx(), action.label()),
+                                    egui::FontId::proportional(13.0),
+                                    p.text,
+                                );
+
+                                let recording = self.keymap_recording == Some(action);
+                                let hovered = row_resp.hovered();
+                                let right = row.right();
+                                let cy = row.center().y;
+                                if recording {
+                                    // A field waiting for keys.
+                                    let text = tr(ui.ctx(), "Press keys…");
+                                    let font = egui::FontId::proportional(12.0);
+                                    let w = ui.painter().layout_no_wrap(text.to_owned(), font.clone(), p.blue).size().x + 20.0;
+                                    let field = egui::Rect::from_min_max(egui::pos2(right - w, cy - 12.0), egui::pos2(right, cy + 12.0));
+                                    ui.painter().rect(
+                                        field,
+                                        egui::CornerRadius::same(6),
+                                        p.surface,
+                                        egui::Stroke::new(1.5, p.blue),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                    ui.painter().text(field.center(), egui::Align2::CENTER_CENTER, text, font, p.blue);
+                                } else if let Some(sc) = self.keymap.get(action) {
+                                    // One keycap per key, laid out from the right edge.
+                                    let font = egui::FontId::proportional(12.0);
+                                    let mut x = right;
+                                    for key in sc.keys().iter().rev() {
+                                        let galley = ui.painter().layout_no_wrap(key.clone(), font.clone(), p.text);
+                                        let w = (galley.size().x + 10.0).max(22.0);
+                                        let cap = egui::Rect::from_min_max(egui::pos2(x - w, cy - 11.0), egui::pos2(x, cy + 11.0));
+                                        // Slightly deeper bottom edge reads as a key.
+                                        ui.painter().rect_filled(
+                                            cap.translate(egui::vec2(0.0, 1.0)),
+                                            egui::CornerRadius::same(5),
+                                            p.border,
+                                        );
+                                        ui.painter().rect(
+                                            cap,
+                                            egui::CornerRadius::same(5),
+                                            p.subtle,
+                                            egui::Stroke::new(1.0, if hovered { p.pressed } else { p.border }),
+                                            egui::StrokeKind::Inside,
+                                        );
+                                        ui.painter().galley(
+                                            cap.center() - galley.size() * 0.5,
+                                            galley,
+                                            if hovered { p.strong } else { p.text },
+                                        );
+                                        x -= w + 4.0;
+                                    }
+                                } else {
+                                    ui.painter().text(
+                                        egui::pos2(right, cy),
+                                        egui::Align2::RIGHT_CENTER,
+                                        tr(ui.ctx(), "Not set"),
+                                        egui::FontId::proportional(12.0),
+                                        if hovered { p.muted } else { p.faint },
+                                    );
+                                }
+
+                                if row_resp.clicked() {
+                                    self.keymap_recording = if recording { None } else { Some(action) };
+                                    self.keymap_note = None;
+                                }
+                                row_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                            }
+                        });
+                });
+
+                if let Some(note) = &self.keymap_note {
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new(note).size(11.5).color(p.amber));
+                }
+                ui.add_space(10.0);
+                ui.label(
+                    egui::RichText::new(tr(ui.ctx(), "Click a row, then press the new keys. Delete clears, Esc cancels."))
+                        .size(11.5)
+                        .color(p.muted),
                 );
+
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    if !self.keymap.is_default() {
+                        let reset = ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(tr(ui.ctx(), "Restore defaults")).size(12.5).color(p.blue),
+                            )
+                            .sense(egui::Sense::click()),
+                        );
+                        if reset.clicked() {
+                            self.keymap = Keymap::default();
+                            self.keymap_recording = None;
+                            self.keymap_note = None;
+                            self.cache_dirty = true;
+                        }
+                        reset.on_hover_cursor(egui::CursorIcon::PointingHand);
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if compact_button(ui, "Done", true).clicked() {
+                            close = true;
+                        }
+                    });
+                });
             });
+
+        if close {
+            self.keymap_open = false;
+            self.keymap_recording = None;
+            self.keymap_note = None;
+        }
     }
 
     fn render_ui(&mut self, ctx: &egui::Context) {
         self.language.apply(ctx);
         let colors = ThemeColors::current(ctx);
 
+        self.handle_shortcuts(ctx);
         self.handle_tab_shortcuts(ctx);
-        self.handle_search_shortcut(ctx);
         self.select_comparison_editor(ctx);
-        self.handle_edit_history(ctx);
-        // Command+V replaces the whole document only when the editor is not being edited.
-        // Insert at the selection, then format valid JSON as part of the same edit.
-        self.handle_paste(ctx);
-        self.handle_folded_copy_cut(ctx);
+        // The shortcut panel owns the keyboard while it is open.
+        if !self.keymap_open {
+            self.handle_edit_history(ctx);
+            // Command+V replaces the whole document only when the editor is not being edited.
+            // Insert at the selection, then format valid JSON as part of the same edit.
+            self.handle_paste(ctx);
+            self.handle_folded_copy_cut(ctx);
+        }
         self.open_dropped_files(ctx);
 
-        self.render_top_bar(ctx, colors);
-
-        if self.tabs.len() > 1 {
-            self.render_tab_rail(ctx, colors);
+        // Window-wide glow behind the (transparent) panels.
+        paint_glow_rect(
+            ctx,
+            &ctx.layer_painter(egui::LayerId::background()),
+            ctx.screen_rect(),
+            egui::CornerRadius::ZERO,
+            Glow::Backdrop,
+        );
+        // Slide the sidebar in and out instead of snapping.
+        let sidebar_t = ctx.animate_bool_with_time_and_easing(
+            egui::Id::new("sidebar_slide"),
+            !self.sidebar_hidden,
+            0.22,
+            egui::emath::easing::cubic_out,
+        );
+        if sidebar_t > 0.0 {
+            self.render_tab_rail(ctx, colors, sidebar_t);
         }
 
         let mut open_comparison = false;
-        // =========================================================================
-        // Two-Column Layout using explicit rectangles for pixel-perfect alignment.
-        // Both panes share the divider's vertical bounds; the outer bands use
-        // the same background color without extending the scrollable viewports.
-        // =========================================================================
+        // Layout: a toolbar row level with the window controls, then floating cards.
         egui::CentralPanel::default()
-            .frame(
-                egui::Frame::default()
-                    .fill(colors.ui.canvas)
-                    .inner_margin(egui::Margin {
-                        left: 0,
-                        right: 0,
-                        top: 8,
-                        bottom: 0,
-                    }),
-            )
+            .frame(egui::Frame::default())
             .show(ctx, |ui| {
-                let panel_rect = ui.available_rect_before_wrap();
+                let full = ui.available_rect_before_wrap();
+                let p = colors.ui;
+                let side_gap = snap_to_pixels(ctx, 8.0 - 4.0 * sidebar_t);
+                let bar_rect = egui::Rect::from_min_max(
+                    egui::pos2(full.left() + side_gap, full.top()),
+                    egui::pos2(full.right() - 6.0, full.top() + TOP_ROW_H),
+                );
+                // Whole-point edges keep both cards' borders equally crisp and level.
+                let cards_rect = egui::Rect::from_min_max(
+                    egui::pos2((full.left() + side_gap).round(), (full.top() + TOP_ROW_H + 6.0).round()),
+                    egui::pos2((full.right() - 8.0).round(), (full.bottom() - 8.0).round()),
+                );
+                // Empty toolbar space moves the window; buttons registered later win clicks.
+                window_drag_area(ui, bar_rect, "toolbar_drag");
+
+                let mut tb = ui.new_child(
+                    egui::UiBuilder::default()
+                        .max_rect(bar_rect)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                tb.spacing_mut().item_spacing = egui::vec2(3.0, 0.0);
+                // Keep clear of the traffic lights whenever the sidebar is too narrow to hold them.
+                if cfg!(target_os = "macos") {
+                    tb.add_space((72.0 - bar_rect.left()).max(0.0));
+                }
+                if self.sidebar_hidden {
+                    if btn_sidebar(&mut tb, false).clicked() {
+                        self.sidebar_hidden = false;
+                        self.cache_dirty = true;
+                    }
+                    if btn_new_tab(&mut tb).clicked() {
+                        let ctx = tb.ctx().clone();
+                        self.add_tab(&ctx);
+                    }
+                    toolbar_separator(&mut tb);
+                }
+
                 if self.tabs[self.active].comparison.is_some() {
-                    self.render_comparison(ui, panel_rect, colors);
-                    ui.allocate_rect(panel_rect, egui::Sense::hover());
+                    let bar_left = tb.min_rect().right();
+                    self.render_comparison(ui, cards_rect, bar_rect, bar_left, colors);
+                    ui.allocate_rect(full, egui::Sense::hover());
                     return;
                 }
-                let total_w = panel_rect.width();
-                let total_h = panel_rect.height();
-                let origin = panel_rect.min;
 
-                let min_w = if self.tabs.len() == 1 { 290.0 } else { 260.0 };
+                let total_w = cards_rect.width();
                 let max_w = (total_w - 260.0).max(300.0);
                 if !self.split_customized {
                     self.left_panel_width = total_w * 0.5;
                 }
-                self.left_panel_width = self.left_panel_width.clamp(min_w, max_w);
-
+                self.left_panel_width = self.left_panel_width.clamp(260.0, max_w);
                 let left_w = self.left_panel_width;
                 let edit_mode = self.tabs[self.active].edit_mode;
 
-                let toolbar_h = 28.0;
-                let spacing_h = 6.0;
-                let card_top_y = origin.y + toolbar_h + spacing_h;
-                let card_h = (origin.y + total_h - card_top_y).max(50.0);
-                let background_rect = egui::Rect::from_min_size(
-                    egui::pos2(origin.x, card_top_y),
-                    egui::vec2(total_w, card_h),
-                );
-                ui.painter().rect_filled(
-                    background_rect,
-                    egui::CornerRadius::ZERO,
-                    colors.ui.surface,
-                );
-                let pane_rect = background_rect.shrink2(egui::vec2(0.0, 8.0));
-
-                // 1. TOOLBAR: actions grouped by feature on the left
+                // Toolbar: actions grouped by feature
                 // (mode | reshape | history | folding | output | clear), search on the right.
-                let toolbar_rect = egui::Rect::from_min_size(origin, egui::vec2(total_w, toolbar_h));
-                let mut tb = ui.new_child(
-                    egui::UiBuilder::default()
-                        .max_rect(toolbar_rect)
-                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                );
-                tb.spacing_mut().item_spacing = egui::vec2(3.0, 0.0);
-                if self.tabs.len() == 1 && btn_new_tab(&mut tb).clicked() {
-                    let ctx = tb.ctx().clone();
-                    self.add_tab(&ctx);
-                }
                 if btn_mode(&mut tb, edit_mode).clicked() {
                     let ctx = tb.ctx().clone();
                     self.tabs[self.active].set_edit_mode(&ctx, !edit_mode);
@@ -1148,8 +1379,8 @@ impl JsonViewerApp {
                 tab.toolbar_clear(&mut tb);
 
                 let search_rect = egui::Rect::from_min_max(
-                    egui::pos2(tb.min_rect().right() + 12.0, origin.y),
-                    egui::pos2(origin.x + total_w - 6.0, origin.y + toolbar_h),
+                    egui::pos2(tb.min_rect().right() + 12.0, bar_rect.top() + 6.0),
+                    bar_rect.max,
                 );
                 let mut search_ui = ui.new_child(
                     egui::UiBuilder::default()
@@ -1157,64 +1388,63 @@ impl JsonViewerApp {
                         .layout(egui::Layout::right_to_left(egui::Align::Center)),
                 );
                 let pill_w = search_rect.width().clamp(120.0, 300.0).min(search_rect.width());
-                tab.render_search_box(&mut search_ui, pill_w, colors.ui);
+                tab.render_search_box(&mut search_ui, pill_w, p);
 
                 if edit_mode {
-                    // 2. EDIT MODE: the editor takes the whole width.
-                    let editor_rect = egui::Rect::from_min_size(
-                        egui::pos2(origin.x, pane_rect.top()),
-                        egui::vec2(total_w, pane_rect.height()),
-                    );
+                    // EDIT MODE: one card with the editor.
+                    let body = draw_card(ui, cards_rect, true);
                     let mut editor_ui = ui.new_child(
                         egui::UiBuilder::default()
-                            .max_rect(editor_rect)
+                            .max_rect(body)
                             .layout(egui::Layout::top_down(egui::Align::LEFT)),
                     );
-                    self.tabs[self.active].render_editor_card(
-                        &mut editor_ui,
-                        editor_rect,
-                        colors,
-                        None,
-                    );
-                    self.draw_copy_notice(&editor_ui, editor_rect, colors.ui);
+                    self.tabs[self.active].render_editor_card(&mut editor_ui, body, colors, None);
+                    self.draw_copy_notice(&editor_ui, body, p);
                 } else {
-                    // 2. VIEW MODE: whole tree on the left, selected node on the right.
+                    // VIEW MODE: whole tree on the left, selected node on the right.
                     let tab = &mut self.tabs[self.active];
                     // The editor is hidden, so clicks and pastes must not target it.
                     tab.editor_card_rect = egui::Rect::NOTHING;
                     tab.poll_request_loading(ui.ctx());
 
-                    let tree_rect = egui::Rect::from_min_size(
-                        egui::pos2(origin.x, pane_rect.top()),
-                        egui::vec2(left_w, pane_rect.height()),
-                    );
+                    let (left_rect, right_rect) = split_cards(cards_rect, left_w);
+                    // A click inside a card focuses it.
+                    if let Some(pos) = ui.input(|i| {
+                        i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten()
+                    }) {
+                        if right_rect.contains(pos) {
+                            self.node_focused = true;
+                        } else if left_rect.contains(pos) {
+                            self.node_focused = false;
+                        }
+                    }
+                    let node_focused = self.node_focused;
+                    let tree_body = draw_card(ui, left_rect, !node_focused);
                     let mut tree_ui = ui.new_child(
                         egui::UiBuilder::default()
-                            .max_rect(tree_rect)
+                            .max_rect(tree_body)
                             .layout(egui::Layout::top_down(egui::Align::LEFT)),
                     );
-                    self.render_tree_card(&mut tree_ui, tree_rect, colors);
+                    self.render_tree_card(&mut tree_ui, tree_body, colors);
 
-                    let node_rect = egui::Rect::from_min_size(
-                        egui::pos2(origin.x + left_w, pane_rect.top()),
-                        egui::vec2((total_w - left_w).max(100.0), pane_rect.height()),
-                    );
+                    let node_body = draw_card(ui, right_rect, node_focused);
                     let mut node_ui = ui.new_child(
                         egui::UiBuilder::default()
-                            .max_rect(node_rect)
+                            .max_rect(node_body)
                             .layout(egui::Layout::top_down(egui::Align::LEFT)),
                     );
-                    self.tabs[self.active].render_node_card(&mut node_ui, node_rect, colors);
+                    self.tabs[self.active].render_node_card(&mut node_ui, node_body, colors);
 
                     // Register last so the divider takes priority over both cards.
-                    self.render_split_handle(ui, panel_rect, pane_rect);
+                    self.render_split_handle(ui, cards_rect);
                 }
 
                 // Consume the full panel rect so egui doesn't complain
-                ui.allocate_rect(panel_rect, egui::Sense::hover());
+                ui.allocate_rect(full, egui::Sense::hover());
             });
 
         self.render_edit_modal(ctx);
+        self.render_keymap_panel(ctx);
         let tab = &mut self.tabs[self.active];
         tab.sync_editor_editing(ctx);
         if let Some(comparison) = &mut tab.comparison {
@@ -1271,55 +1501,73 @@ impl JsonViewerApp {
     }
 
     /// ⌘F focuses the search box and selects its text.
-    fn handle_search_shortcut(&mut self, ctx: &egui::Context) {
-        if self.comparison.is_some() || self.edit_modal.is_some() {
+    /// Runs the action whose shortcut was pressed this frame, if any.
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        self.keymap.publish(ctx);
+        if self.keymap_open {
+            self.capture_keymap_keys(ctx);
             return;
         }
-        let pressed = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F));
-        if !pressed {
+        // Typing in the edit dialog gets the keys instead.
+        if self.edit_modal.is_some() {
             return;
         }
-        let search_id = search_input_id(self.id);
-        let editor_id = json_editor_id(self.id);
-        ctx.memory_mut(|mem| {
-            mem.surrender_focus(editor_id);
-            mem.request_focus(search_id);
-        });
-        self.editor_editing = false;
-        let mut state = egui::text_edit::TextEditState::load(ctx, search_id).unwrap_or_default();
-        let len = self.search_query.chars().count();
-        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
-            egui::text::CCursor::new(0),
-            egui::text::CCursor::new(len),
-        )));
-        state.store(ctx, search_id);
+        if let Some(action) = self.keymap.take_pressed(ctx) {
+            self.run_action(ctx, action);
+        }
     }
 
+    fn run_action(&mut self, ctx: &egui::Context, action: Action) {
+        let comparing = self.tabs[self.active].comparison.is_some();
+        match action {
+            Action::ToggleSidebar => {
+                self.sidebar_hidden = !self.sidebar_hidden;
+                self.cache_dirty = true;
+            }
+            Action::NewTab => self.add_tab(ctx),
+            Action::CloseTab => {
+                if self.tabs.len() > 1 {
+                    self.close_tab(ctx, self.active);
+                    // Keep ⌘W from also closing the window.
+                    self.suppress_close_frames = 3;
+                }
+            }
+            Action::NextTab | Action::PrevTab => {
+                let n = self.tabs.len();
+                let step = if action == Action::NextTab { 1 } else { n - 1 };
+                self.activate_tab(ctx, (self.active + step) % n);
+            }
+            Action::ToggleEditMode => {
+                if !comparing {
+                    let on = !self.tabs[self.active].edit_mode;
+                    self.tabs[self.active].set_edit_mode(ctx, on);
+                    self.cache_dirty = true;
+                }
+            }
+            Action::Search => {
+                if !comparing {
+                    self.focus_search(ctx);
+                }
+            }
+            Action::ExpandAll => self.expand_all(),
+            Action::CollapseAll => self.collapse_all(),
+            Action::Format => self.format_json(ctx),
+            Action::Sort => self.cycle_sort(),
+            Action::Simplify => {
+                if self.parsed.is_some() {
+                    self.simplify_json();
+                }
+            }
+            Action::CopyJson => self.copy_json(ctx),
+            Action::CopyMinified => self.copy_minified_with_notice(ctx),
+            Action::Compare => self.add_comparison_tab(ctx),
+            Action::Clear => self.clear_document(),
+        }
+    }
+
+    /// After ⌘W closes a tab, ignore the window close request it can also trigger.
     fn handle_tab_shortcuts(&mut self, ctx: &egui::Context) {
-        let (new_tab, close_tab, close_requested) = ctx.input(|i| {
-            let cmd = i.modifiers.command || i.modifiers.mac_cmd || i.modifiers.ctrl;
-            let plain = cmd && !i.modifiers.shift;
-            (
-                plain && i.key_pressed(egui::Key::T),
-                plain && i.key_pressed(egui::Key::W),
-                i.viewport().close_requested(),
-            )
-        });
-        if new_tab {
-            self.add_tab(ctx);
-            ctx.input_mut(|i| {
-                i.consume_key(egui::Modifiers::COMMAND, egui::Key::T);
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::T);
-            });
-        }
-        if close_tab && self.tabs.len() > 1 {
-            self.close_tab(ctx, self.active);
-            self.suppress_close_frames = 3;
-            ctx.input_mut(|i| {
-                i.consume_key(egui::Modifiers::COMMAND, egui::Key::W);
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::W);
-            });
-        }
+        let close_requested = ctx.input(|i| i.viewport().close_requested());
         if self.suppress_close_frames > 0 {
             if close_requested {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -1345,89 +1593,90 @@ impl JsonViewerApp {
         }
     }
 
-    fn render_tab_rail(&mut self, ctx: &egui::Context, colors: ThemeColors) {
+    fn render_tab_rail(&mut self, ctx: &egui::Context, colors: ThemeColors, slide: f32) {
         let mut action = RailAction::default();
         // Consume the flag before handling clicks, so a tab created this frame is revealed next frame.
         let reveal = self.reveal_active;
         self.reveal_active = false;
-        // Leave enough room for both editor toolbars when the window is narrow.
-        let max_width = (ctx.available_rect().width() - 490.0).clamp(TAB_RAIL_WIDTH, 400.0);
+        // Leave enough room for the cards when the window is narrow.
+        let max_width = (ctx.screen_rect().width() - 560.0).clamp(160.0, 400.0);
+        self.tab_rail_width = snap_to_pixels(ctx, self.tab_rail_width.clamp(160.0, max_width));
         let p = colors.ui;
-        let rail_id = egui::Id::new("json_tab_rail");
-        let response = egui::SidePanel::left(rail_id)
-            .default_width(self.tab_rail_width)
-            .width_range(120.0..=max_width)
-            .resizable(true)
+        // Not resizable by egui (it draws a line on hover); tab_rail_contents adds a handle.
+        egui::SidePanel::left(egui::Id::new("json_tab_rail"))
+            // While sliding, the panel narrows and the content moves out to the left.
+            .exact_width(snap_to_pixels(ctx, self.tab_rail_width * slide))
+            .resizable(false)
             .show_separator_line(false)
-            .frame(
-                egui::Frame::default()
-                    .fill(p.sidebar)
-                    .inner_margin(egui::Margin {
-                        left: 6,
-                        right: 6,
-                        top: 8,
-                        bottom: 8,
-                    }),
-            )
+            .frame(egui::Frame::default())
             .show(ctx, |ui| {
-                action = self.tab_rail_contents(ui, reveal);
-                let rect = ui.clip_rect();
-                ui.painter().vline(
-                    rect.right() - 0.5,
-                    rect.y_range(),
-                    egui::Stroke::new(1.0, p.border),
-                );
+                action = self.tab_rail_contents(ui, reveal, p);
             });
-        // Match the center divider without changing other widgets' foreground colors.
-        // egui 0.31 uses this ID for the SidePanel's native resize handle.
-        if ctx
-            .read_response(rail_id.with("__resize"))
-            .is_some_and(|response| response.hovered() || response.dragged())
-        {
-            let rect = response.response.rect;
-            ctx.layer_painter(egui::LayerId::background())
-                .with_clip_rect(rect)
-                .vline(
-                    rect.right() - 1.0,
-                    rect.y_range(),
-                    egui::Stroke::new(2.0, p.blue),
-                );
-        }
-        let width = response.response.rect.width();
-        if (width - self.tab_rail_width).abs() > 0.5 {
-            self.tab_rail_width = width;
-            self.cache_dirty = true;
-        }
         self.apply_rail_action(ctx, action);
     }
 
-    fn tab_rail_contents(&mut self, ui: &mut egui::Ui, reveal: bool) -> RailAction {
+    /// Sidebar: window controls row, tab list, and settings footer.
+    fn tab_rail_contents(&mut self, ui: &mut egui::Ui, reveal: bool, p: UiColors) -> RailAction {
         let mut action = RailAction::default();
-        if rail_add_button(ui).clicked() {
-            action.add = true;
+        // Lay out at the full sidebar width, anchored to the panel's right edge, so the
+        // content keeps its size and slides (clipped) when the panel narrows.
+        let panel = ui.max_rect();
+        ui.set_clip_rect(panel);
+        let full = egui::Rect::from_min_max(
+            egui::pos2(panel.right() - self.tab_rail_width + 8.0, panel.top()),
+            egui::pos2(panel.right() - 6.0, panel.bottom() - 6.0),
+        );
+        let top = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), TOP_ROW_H));
+        let footer_h = 30.0;
+        let footer = egui::Rect::from_min_max(
+            egui::pos2(full.left(), full.bottom() - footer_h),
+            full.max,
+        );
+        let list = egui::Rect::from_min_max(
+            egui::pos2(full.left(), top.bottom() + 8.0),
+            egui::pos2(full.right(), footer.top() - 4.0),
+        );
+
+        // Top row: room for the traffic lights, sidebar toggle, and new tab on the right.
+        window_drag_area(ui, top, "sidebar_drag");
+        let mut row = ui.new_child(
+            egui::UiBuilder::default()
+                .max_rect(top)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        row.spacing_mut().item_spacing = egui::vec2(3.0, 0.0);
+        if cfg!(target_os = "macos") {
+            row.add_space(64.0);
         }
-        ui.add_space(4.0);
+        if btn_sidebar(&mut row, true).clicked() {
+            self.sidebar_hidden = true;
+            self.cache_dirty = true;
+        }
+        row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |row| {
+            if btn_new_tab(row).clicked() {
+                action.add = true;
+            }
+        });
 
         let rows: Vec<(u64, String, bool, bool)> = self
             .tabs
             .iter()
-            .map(|tab| {
-                (
-                    tab.id,
-                    tab.name.clone(),
-                    tab.pinned,
-                    tab.comparison.is_some(),
-                )
-            })
+            .map(|tab| (tab.id, tab.name.clone(), tab.pinned, tab.comparison.is_some()))
             .collect();
         let active_id = self.tabs[self.active].id;
         let renaming_id = self.renaming.as_ref().map(|rename| rename.id);
 
+        let mut list_ui = ui.new_child(
+            egui::UiBuilder::default()
+                .max_rect(list)
+                .layout(egui::Layout::top_down(egui::Align::LEFT)),
+        );
         egui::ScrollArea::vertical()
             .id_salt("tab_rail_scroll")
             .auto_shrink([false; 2])
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 2.0;
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
+            .show(&mut list_ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
                 for (index, (id, name, pinned, comparison)) in rows.into_iter().enumerate() {
                     if renaming_id == Some(id) {
                         self.rename_row(ui, &mut action);
@@ -1446,6 +1695,31 @@ impl JsonViewerApp {
                     }
                 }
             });
+
+        let mut footer_ui = ui.new_child(
+            egui::UiBuilder::default()
+                .max_rect(footer)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        footer_ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+        self.render_settings(&mut footer_ui, p);
+
+        // Invisible resize handle in the sidebar's right margin.
+        let clip = ui.clip_rect();
+        let handle = egui::Rect::from_min_max(
+            egui::pos2(full.right() + 1.0, clip.top() + TOP_ROW_H),
+            egui::pos2(clip.right(), clip.bottom()),
+        );
+        let resp = ui.interact(handle, egui::Id::new("sidebar_resize"), egui::Sense::drag());
+        if resp.dragged() {
+            self.tab_rail_width += resp.drag_delta().x;
+            self.cache_dirty = true;
+        }
+        if resp.contains_pointer() || resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+
+        ui.allocate_rect(panel, egui::Sense::hover());
         action
     }
 
@@ -1700,8 +1974,7 @@ impl JsonTab {
         let p = colors.ui;
         ui.set_clip_rect(ui.clip_rect().intersect(card_rect));
         egui::Frame::default()
-            .fill(p.surface)
-            .inner_margin(egui::Margin::symmetric(8, 0))
+            .inner_margin(egui::Margin::symmetric(4, 0))
             .show(ui, |ui| {
                 ui.set_min_size(ui.available_size());
                 let hint = |ui: &mut egui::Ui, text: &str| {
@@ -1917,34 +2190,34 @@ impl JsonViewerApp {
         let mut save_modal = false;
         let screen = ctx.screen_rect();
 
+        let dark = ctx.theme() == egui::Theme::Dark;
         egui::Area::new(egui::Id::new("edit_modal_backdrop"))
             .order(egui::Order::Middle)
             .fixed_pos(screen.min)
             .interactable(true)
             .show(ctx, |ui| {
                 let resp = ui.allocate_rect(screen, egui::Sense::click());
-                ui.painter()
-                    .rect_filled(screen, 0.0, egui::Color32::from_black_alpha(56));
+                ui.painter().rect_filled(
+                    screen,
+                    0.0,
+                    egui::Color32::from_black_alpha(if dark { 90 } else { 30 }),
+                );
                 if resp.clicked() {
                     close_modal = true;
                 }
             });
 
         let p = UiColors::from_ctx(ctx);
-        let frame = egui::Frame::default()
-            .fill(p.surface)
-            .stroke(egui::Stroke::new(
-                1.0,
-                p.border,
-            ))
-            .corner_radius(egui::CornerRadius::same(12))
-            .shadow(egui::epaint::Shadow {
-                offset: [0, 12],
-                blur: 28,
-                spread: 0,
-                color: egui::Color32::from_black_alpha(if ctx.theme() == egui::Theme::Dark { 120 } else { 40 }),
-            })
-            .inner_margin(egui::Margin::same(18));
+        // Long or multi-line strings get a wider dialog.
+        let roomy = self.edit_modal.as_ref().is_some_and(|m| {
+            m.target_type == ValueTypeTag::RawJson
+                || m.input_text.contains('\n')
+                || m.input_text.chars().count() > 60
+        });
+        let width = if roomy { 600.0 } else { 480.0 };
+        let max_h = (screen.height() - 240.0).clamp(120.0, 420.0);
+        // Same look as menus and tooltips (see theme.rs), with roomier padding.
+        let frame = egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(20));
 
         egui::Window::new("edit_value_modal")
             .title_bar(false)
@@ -1952,80 +2225,83 @@ impl JsonViewerApp {
             .resizable(false)
             .movable(true)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -16.0))
-            .default_width(440.0)
+            .default_width(width)
             .frame(frame)
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                ui.set_min_width(420.0);
-                ui.set_max_width(460.0);
-                ui.spacing_mut().item_spacing.y = 4.0;
+                ui.set_width(width);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let Some(modal) = &mut self.edit_modal else {
+                    return;
+                };
 
+                // Header: icon tile, title, path, close.
                 ui.horizontal(|ui| {
-                    let (icon_rect, _) =
-                        ui.allocate_exact_size(egui::vec2(22.0, 36.0), egui::Sense::hover());
-                    let edit_icon_rect =
-                        egui::Rect::from_center_size(icon_rect.center(), egui::vec2(18.0, 18.0));
-                    draw_lucide_icon(
-                        ui.painter(),
-                        edit_icon_rect,
-                        LucideIcon::Pencil,
-                        p.primary,
-                    );
-                    ui.add_space(6.0);
+                    let (tile, _) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::hover());
+                    ui.painter().rect_filled(tile, egui::CornerRadius::same(9), p.blue_bg);
+                    draw_lucide_icon(ui.painter(), tile.shrink(9.0), LucideIcon::PencilLine, p.blue);
+                    ui.add_space(10.0);
                     ui.vertical(|ui| {
+                        ui.set_width(width - 34.0 - 10.0 - 34.0);
                         ui.label(
                             egui::RichText::new(tr(ui.ctx(), "Edit Value"))
-                                .size(16.0)
+                                .size(15.0)
                                 .strong()
                                 .color(p.strong),
                         );
-                        ui.label(
-                            egui::RichText::new(tr(ui.ctx(), "Update this node and write it back to the editor"))
-                                .size(11.5)
-                                .color(p.muted),
-                        );
+                        ui.add_space(3.0);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&modal.path).monospace().size(11.5).color(p.muted),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(&modal.path);
                     });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let (rect, resp) =
-                            ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
                         if resp.hovered() {
-                            ui.painter().rect_filled(
-                                rect,
-                                egui::CornerRadius::same(6),
-                                p.hover,
-                            );
+                            ui.painter().rect_filled(rect, egui::CornerRadius::same(7), p.hover);
                         }
-                        let close_color = if resp.hovered() {
-                            p.strong
-                        } else {
-                            p.muted
-                        };
-                        let close_icon_rect =
-                            egui::Rect::from_center_size(rect.center(), egui::vec2(14.0, 14.0));
-                        draw_lucide_icon(ui.painter(), close_icon_rect, LucideIcon::X, close_color);
+                        let color = if resp.hovered() { p.strong } else { p.muted };
+                        draw_lucide_icon(ui.painter(), rect.shrink(6.0), LucideIcon::X, color);
                         if resp.clicked() {
                             close_modal = true;
                         }
                     });
                 });
 
-                if let Some(modal) = &mut self.edit_modal {
-                    ui.add_space(12.0);
-                    field_caption(ui, "PATH");
-                    info_pill(ui, &modal.path);
-                    ui.add_space(6.0);
-                    field_caption(ui, "KEY");
-                    let key = if modal.key_label.is_empty() {
-                        format!("({})", tr(ui.ctx(), "root"))
-                    } else {
-                        modal.key_label.clone()
-                    };
-                    info_pill(ui, &key);
-
-                    ui.add_space(8.0);
-                    field_caption(ui, "TYPE");
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
+                ui.add_space(18.0);
+                // Key (read-only) and type, side by side.
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    if !modal.key_label.is_empty() {
+                        let key_frame = egui::Frame::default()
+                            .fill(p.subtle)
+                            .stroke(egui::Stroke::new(1.0, p.border))
+                            .corner_radius(egui::CornerRadius::same(9))
+                            .inner_margin(egui::Margin::symmetric(10, 6));
+                        key_frame.show(ui, |ui| {
+                            ui.set_max_width(width * 0.4);
+                            draw_lucide_icon(
+                                ui.painter(),
+                                egui::Rect::from_center_size(
+                                    ui.cursor().min + egui::vec2(6.0, 9.0),
+                                    egui::vec2(12.0, 12.0),
+                                ),
+                                LucideIcon::Key,
+                                p.faint,
+                            );
+                            ui.add_space(18.0);
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&modal.key_label).monospace().size(12.5).color(p.text),
+                                )
+                                .truncate(),
+                            );
+                        });
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let choices = [
                             (ValueTypeTag::String, "String"),
                             (ValueTypeTag::Number, "Number"),
@@ -2033,127 +2309,154 @@ impl JsonViewerApp {
                             (ValueTypeTag::Null, "Null"),
                             (ValueTypeTag::RawJson, "JSON"),
                         ];
-                        for (tag, label) in choices {
-                            if type_chip(ui, label, modal.target_type == tag).clicked()
-                                && modal.target_type != tag
-                            {
-                                modal.target_type = tag;
-                                modal.error = None;
-                                if tag == ValueTypeTag::Bool
-                                    && modal.input_text != "true"
-                                    && modal.input_text != "false"
-                                {
-                                    modal.input_text = "true".to_string();
-                                }
-                            }
-                        }
-                    });
-
-                    ui.add_space(8.0);
-                    field_caption(ui, "VALUE");
-                    let has_error = modal.error.is_some();
-                    let field_stroke = if has_error {
-                        egui::Stroke::new(1.0, p.danger)
-                    } else {
-                        egui::Stroke::new(1.0, p.border)
-                    };
-                    let field = egui::Frame::default()
-                        .fill(p.subtle)
-                        .stroke(field_stroke)
-                        .corner_radius(egui::CornerRadius::same(8))
-                        .inner_margin(egui::Margin::symmetric(10, 8));
-
-                    field.show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-                        match modal.target_type {
-                            ValueTypeTag::Bool => {
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 8.0;
-                                    if type_chip(ui, "true", modal.input_text == "true").clicked() {
-                                        modal.input_text = "true".to_string();
-                                        modal.error = None;
-                                    }
-                                    if type_chip(ui, "false", modal.input_text == "false").clicked()
-                                    {
-                                        modal.input_text = "false".to_string();
-                                        modal.error = None;
-                                    }
-                                });
-                            }
-                            ValueTypeTag::Null => {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(tr(ui.ctx(), "This value will be set to null"))
-                                            .size(13.0)
-                                            .color(p.muted),
-                                    )
-                                    .selectable(false),
-                                );
-                            }
-                            _ => {
-                                let text_edit = if modal.target_type == ValueTypeTag::RawJson {
-                                    egui::TextEdit::multiline(&mut modal.input_text)
-                                        .font(egui::TextStyle::Monospace)
-                                        .desired_width(f32::INFINITY)
-                                        .desired_rows(7)
-                                        .frame(false)
-                                } else {
-                                    egui::TextEdit::singleline(&mut modal.input_text)
-                                        .font(egui::TextStyle::Monospace)
-                                        .desired_width(f32::INFINITY)
-                                        .frame(false)
-                                };
-                                let resp = ui.add(text_edit);
-                                if !resp.has_focus() {
-                                    resp.request_focus();
-                                }
-                                if resp.changed() {
+                        let labels: Vec<&str> = choices.iter().map(|(_, l)| *l).collect();
+                        let selected = choices
+                            .iter()
+                            .position(|(t, _)| *t == modal.target_type)
+                            .unwrap_or(0);
+                        // Right-to-left layout: allocate the whole control as one widget.
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            if let Some(i) = segmented(ui, &labels, selected) {
+                                let tag = choices[i].0;
+                                if tag != modal.target_type {
+                                    modal.target_type = tag;
                                     modal.error = None;
+                                    if tag == ValueTypeTag::Bool
+                                        && modal.input_text != "true"
+                                        && modal.input_text != "false"
+                                    {
+                                        modal.input_text = "true".to_string();
+                                    }
                                 }
-                                if modal.target_type != ValueTypeTag::RawJson
-                                    && resp.lost_focus()
-                                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                                {
-                                    save_modal = true;
-                                }
-                            }
-                        }
-                    });
-
-                    if let Some(err) = &modal.error {
-                        ui.add_space(2.0);
-                        ui.label(
-                            egui::RichText::new(err)
-                                .size(12.0)
-                                .color(p.danger),
-                        );
-                    }
-
-                    ui.add_space(4.0);
-                    let hint = if modal.target_type == ValueTypeTag::RawJson {
-                        "Cmd+Enter to save   Esc to cancel"
-                    } else {
-                        "Enter to save   Esc to cancel"
-                    };
-                    ui.label(
-                        egui::RichText::new(tr(ui.ctx(), hint))
-                            .size(11.0)
-                            .color(p.faint),
-                    );
-
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.spacing_mut().item_spacing.x = 8.0;
-                            if modal_button(ui, "Save", true).clicked() {
-                                save_modal = true;
-                            }
-                            if modal_button(ui, "Cancel", false).clicked() {
-                                close_modal = true;
                             }
                         });
                     });
+                });
+
+                ui.add_space(14.0);
+                let input_id = egui::Id::new("edit_modal_input");
+                let focused = ui.memory(|m| m.has_focus(input_id));
+                let stroke = if modal.error.is_some() {
+                    egui::Stroke::new(1.5, p.danger)
+                } else if focused {
+                    egui::Stroke::new(1.5, p.blue)
+                } else {
+                    egui::Stroke::new(1.0, p.border)
+                };
+                let field = egui::Frame::default()
+                    .fill(if focused { p.surface } else { p.subtle })
+                    .stroke(stroke)
+                    .corner_radius(egui::CornerRadius::same(10))
+                    .inner_margin(egui::Margin::symmetric(12, 10));
+                field.show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    match modal.target_type {
+                        ValueTypeTag::Bool => {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                if type_chip(ui, "true", modal.input_text == "true").clicked() {
+                                    modal.input_text = "true".to_string();
+                                    modal.error = None;
+                                }
+                                if type_chip(ui, "false", modal.input_text == "false").clicked() {
+                                    modal.input_text = "false".to_string();
+                                    modal.error = None;
+                                }
+                            });
+                        }
+                        ValueTypeTag::Null => {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(tr(ui.ctx(), "This value will be set to null"))
+                                        .size(13.0)
+                                        .color(p.muted),
+                                )
+                                .selectable(false),
+                            );
+                        }
+                        ValueTypeTag::Number => {
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(&mut modal.input_text)
+                                    .id(input_id)
+                                    .font(egui::FontId::monospace(13.0))
+                                    .desired_width(f32::INFINITY)
+                                    .frame(false),
+                            );
+                            if !resp.has_focus() {
+                                resp.request_focus();
+                            }
+                            if resp.changed() {
+                                modal.error = None;
+                            }
+                            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                save_modal = true;
+                            }
+                        }
+                        ValueTypeTag::String | ValueTypeTag::RawJson => {
+                            // Multi-line text area: wraps long text, shows real line breaks
+                            // and tabs, and scrolls once it gets tall.
+                            let lines = modal.input_text.lines().count().max(1);
+                            let rows = if modal.target_type == ValueTypeTag::RawJson {
+                                lines.clamp(6, 18)
+                            } else {
+                                lines.clamp(3, 14)
+                            };
+                            egui::ScrollArea::vertical()
+                                .id_salt("edit_modal_scroll")
+                                .max_height(max_h)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    let resp = ui.add(
+                                        egui::TextEdit::multiline(&mut modal.input_text)
+                                            .id(input_id)
+                                            .font(egui::FontId::monospace(13.0))
+                                            .desired_width(f32::INFINITY)
+                                            .desired_rows(rows)
+                                            .lock_focus(true)
+                                            .frame(false),
+                                    );
+                                    if !resp.has_focus() && !resp.lost_focus() {
+                                        resp.request_focus();
+                                    }
+                                    if resp.changed() {
+                                        modal.error = None;
+                                    }
+                                });
+                        }
+                    }
+                });
+
+                if let Some(err) = &modal.error {
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(err).size(12.0).color(p.danger));
                 }
+
+                ui.add_space(16.0);
+                // Footer: size and shortcuts on the left, actions on the right.
+                ui.horizontal(|ui| {
+                    let multiline = matches!(modal.target_type, ValueTypeTag::String | ValueTypeTag::RawJson);
+                    let mut info = String::new();
+                    if multiline {
+                        let chars = modal.input_text.chars().count();
+                        let lines = modal.input_text.lines().count().max(1);
+                        info = format!("{} {} · {} {}   ", chars, tr(ui.ctx(), "chars"), lines, tr(ui.ctx(), "lines"));
+                    }
+                    let keys = if multiline { "⌘↩ save · esc cancel" } else { "↩ save · esc cancel" };
+                    ui.label(
+                        egui::RichText::new(format!("{}{}", info, tr(ui.ctx(), keys)))
+                            .size(11.0)
+                            .color(p.faint),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        if modal_button(ui, "Save", true).clicked() {
+                            save_modal = true;
+                        }
+                        if modal_button(ui, "Cancel", false).clicked() {
+                            close_modal = true;
+                        }
+                    });
+                });
             });
 
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -2187,17 +2490,59 @@ impl JsonTab {
     }
 
     /// Buttons that rewrite the document's shape.
+    /// Focuses the search box and selects its text.
+    fn focus_search(&mut self, ctx: &egui::Context) {
+        let search_id = search_input_id(self.id);
+        let editor_id = json_editor_id(self.id);
+        ctx.memory_mut(|mem| {
+            mem.surrender_focus(editor_id);
+            mem.request_focus(search_id);
+        });
+        self.editor_editing = false;
+        let mut state = egui::text_edit::TextEditState::load(ctx, search_id).unwrap_or_default();
+        let len = self.search_query.chars().count();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(len),
+        )));
+        state.store(ctx, search_id);
+    }
+
+    /// Original -> A→Z -> Z→A -> original.
+    fn cycle_sort(&mut self) {
+        self.sort_mode = match self.sort_mode {
+            SortMode::None => SortMode::Asc,
+            SortMode::Asc => SortMode::Desc,
+            SortMode::Desc => SortMode::None,
+        };
+        self.apply_sort();
+    }
+
+    fn copy_json(&mut self, ctx: &egui::Context) {
+        if let Ok(mut cb) = arboard::Clipboard::new() {
+            if cb.set_text(self.input.clone()).is_ok() {
+                self.copy_notice = Some((tr(ctx, "Copied JSON").to_string(), std::time::Instant::now()));
+                self.copy_notice_in_node = false;
+            }
+        }
+    }
+
+    fn copy_minified_with_notice(&mut self, ctx: &egui::Context) {
+        if self.copy_minified() {
+            self.copy_notice = Some((
+                tr(ctx, "Copied minified JSON").to_string(),
+                std::time::Instant::now(),
+            ));
+            self.copy_notice_in_node = false;
+        }
+    }
+
     fn toolbar_reshape(&mut self, ui: &mut egui::Ui, show_format: bool) {
         if show_format && btn_format(ui).clicked() {
             self.format_json(ui.ctx());
         }
         if btn_sort(ui, self.sort_mode).clicked() {
-            self.sort_mode = match self.sort_mode {
-                SortMode::None => SortMode::Asc,
-                SortMode::Asc => SortMode::Desc,
-                SortMode::Desc => SortMode::None,
-            };
-            self.apply_sort();
+            self.cycle_sort();
         }
         if btn_simplify(ui, self.parsed.is_some()).clicked() {
             self.simplify_json();
@@ -2216,16 +2561,10 @@ impl JsonTab {
     /// Buttons that copy the document out.
     fn toolbar_output(&mut self, ui: &mut egui::Ui) {
         if btn_copy(ui).clicked() {
-            if let Ok(mut cb) = arboard::Clipboard::new() {
-                let _ = cb.set_text(self.input.clone());
-            }
+            self.copy_json(ui.ctx());
         }
-        if btn_compress(ui).clicked() && self.copy_minified() {
-            self.copy_notice = Some((
-                tr(ui.ctx(), "Copied minified JSON").to_string(),
-                std::time::Instant::now(),
-            ));
-            self.copy_notice_in_node = false;
+        if btn_compress(ui).clicked() {
+            self.copy_minified_with_notice(ui.ctx());
         }
     }
 
@@ -2285,12 +2624,16 @@ impl JsonTab {
         };
 
         // Size the text field so the trailing controls always fit inside the pill.
+        if self.edit_mode {
+            self.refresh_editor_hits();
+        }
+        let (match_count, match_index) = self.search_status();
         let has_query = !self.search_query.is_empty();
-        let has_matches = !self.search_matches.is_empty();
+        let has_matches = match_count > 0;
         let count_font = egui::FontId::proportional(11.0);
         let count_text = has_query.then(|| {
             if has_matches {
-                format!("{}/{}", self.search_index + 1, self.search_matches.len())
+                format!("{}/{}", match_index + 1, match_count)
             } else {
                 tr(row.ctx(), "No matches").to_string()
             }
@@ -2341,6 +2684,64 @@ impl JsonTab {
         }
     }
 
+    /// Edit mode: tints every search match in the editor, marks the current one more
+    /// strongly, and returns the current match's rect when it should be scrolled to.
+    fn paint_editor_hits(
+        &mut self,
+        ui: &mut egui::Ui,
+        galley: &std::sync::Arc<egui::Galley>,
+        text_rect: egui::Rect,
+        visible_w: f32,
+        max_scroll_x: f32,
+    ) -> Option<egui::Rect> {
+        self.refresh_editor_hits();
+        if self.editor_hits.is_empty() {
+            self.reveal_editor_hit = false;
+            return None;
+        }
+        let dark = ui.visuals().dark_mode;
+        let (fill, current_fill) = if dark {
+            (egui::Color32::from_rgba_unmultiplied(250, 204, 21, 50), egui::Color32::from_rgba_unmultiplied(249, 115, 22, 120))
+        } else {
+            (egui::Color32::from_rgba_unmultiplied(250, 204, 21, 90), egui::Color32::from_rgba_unmultiplied(249, 115, 22, 110))
+        };
+        let clip = ui.clip_rect();
+        let hit_rect = |start: usize, end: usize| {
+            let a = galley.pos_from_cursor(&galley.from_ccursor(egui::text::CCursor::new(start)));
+            let b = galley.pos_from_cursor(&galley.from_ccursor(egui::text::CCursor::new(end)));
+            egui::Rect::from_min_max(
+                text_rect.min + a.min.to_vec2(),
+                text_rect.min + egui::vec2(b.max.x.max(a.min.x + 2.0), a.max.y),
+            )
+        };
+        // Matches are sorted by position, so skip straight to the visible rows.
+        let top_char = galley
+            .cursor_from_pos(egui::vec2(0.0, clip.top() - text_rect.top()))
+            .ccursor
+            .index;
+        let first = self.editor_hits.partition_point(|&(_, end)| end < top_char);
+        for (i, &(start, end)) in self.editor_hits.iter().enumerate().skip(first) {
+            let rect = hit_rect(start, end);
+            if rect.top() > clip.bottom() {
+                break;
+            }
+            let color = if i == self.editor_hit_index { current_fill } else { fill };
+            ui.painter().rect_filled(rect.expand2(egui::vec2(1.0, 0.0)), 3.0, color);
+        }
+        if std::mem::take(&mut self.reveal_editor_hit) {
+            let (start, end) = self.editor_hits[self.editor_hit_index];
+            let rect = hit_rect(start, end);
+            // Horizontal offset is ours to drive; the vertical area scrolls itself.
+            let x = rect.left() - text_rect.left();
+            if x < self.editor_scroll_x || x + rect.width() > self.editor_scroll_x + visible_w {
+                self.editor_scroll_x = (x - visible_w * 0.3).clamp(0.0, max_scroll_x.max(0.0));
+            }
+            ui.ctx().request_repaint();
+            return Some(rect);
+        }
+        None
+    }
+
     fn render_editor_card(
         &mut self,
         ui: &mut egui::Ui,
@@ -2356,8 +2757,7 @@ impl JsonTab {
         }
         self.poll_request_loading(ui.ctx());
         let card_frame = egui::Frame::default()
-            .fill(p.surface)
-            .inner_margin(egui::Margin::symmetric(8, 0));
+            .inner_margin(egui::Margin::symmetric(4, 0));
 
         card_frame.show(ui, |ui| {
             // Digits follow the source, so folding does not make the gutter jump.
@@ -2529,6 +2929,9 @@ impl JsonTab {
                 vert_sa = vert_sa.vertical_scroll_offset(self.editor_scroll_y - sync_scroll);
             }
 
+            // A search match to center. The request must be made outside the inner
+            // horizontal area, which would otherwise swallow the vertical part of it.
+            let mut reveal_rect: Option<egui::Rect> = None;
             let vert_out = vert_sa.show(ui, |ui| {
                 if let Some((lines, color)) = diff {
                     // Glyphs sit at the top of each row with the extra line spacing
@@ -2682,6 +3085,17 @@ impl JsonTab {
                                 .code_editor();
 
                             let resp = ui.add(text_edit);
+                            if self.edit_mode {
+                                if let Some(galley) = last_galley.borrow().clone() {
+                                    reveal_rect = self.paint_editor_hits(
+                                        ui,
+                                        &galley,
+                                        resp.rect,
+                                        visible_editor_w,
+                                        max_scroll_x,
+                                    );
+                                }
+                            }
                             if resp.has_focus() || resp.clicked() || resp.dragged() {
                                 self.editor_editing = true;
                             }
@@ -2777,6 +3191,9 @@ impl JsonTab {
                             }
                         });
                 });
+                if let Some(rect) = reveal_rect {
+                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                }
             });
             self.editor_scroll_y = vert_out.state.offset.y;
             self.editor_scroll_max_y =
@@ -3049,8 +3466,11 @@ impl JsonViewerApp {
         let p = colors.ui;
         ui.set_clip_rect(ui.clip_rect().intersect(card_rect));
         let card_frame = egui::Frame::default()
-            .fill(p.surface)
-            .inner_margin(egui::Margin::symmetric(8, 0));
+            .inner_margin(egui::Margin::symmetric(4, 0));
+
+        // Remember how many tree rows fit, to decide how far a new paste expands.
+        let row_pitch = 25.0 + ui.spacing().item_spacing.y;
+        self.tree_fit_rows = ((card_rect.height() / row_pitch).floor() as usize).max(1);
 
         card_frame.show(ui, |ui| {
             if let Some(err) = &self.parse_error {
@@ -3487,37 +3907,6 @@ fn find_double_click_selection(text: &str, click_char_idx: usize) -> (usize, usi
     }
 }
 
-fn rail_add_button(ui: &mut egui::Ui) -> egui::Response {
-    let p = UiColors::current(ui);
-    let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(
-            rect,
-            egui::CornerRadius::same(6),
-            p.hover,
-        );
-    }
-    let color = if resp.hovered() {
-        p.blue
-    } else {
-        p.text
-    };
-    let icon_rect = egui::Rect::from_center_size(
-        egui::pos2(rect.left() + 16.0, rect.center().y),
-        egui::vec2(14.0, 14.0),
-    );
-    draw_lucide_icon(ui.painter(), icon_rect, LucideIcon::Plus, color);
-    ui.painter().text(
-        egui::pos2(rect.left() + 30.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        tr(ui.ctx(), "New Tab"),
-        egui::FontId::proportional(13.0),
-        color,
-    );
-    resp.on_hover_text(tr(ui.ctx(), "New Tab"))
-}
-
 fn tab_row(
     ui: &mut egui::Ui,
     index: usize,
@@ -3531,33 +3920,30 @@ fn tab_row(
 ) {
     let p = UiColors::current(ui);
     let width = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 30.0), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 34.0), egui::Sense::click());
     if reveal {
         ui.scroll_to_rect(rect, Some(egui::Align::TOP));
     }
 
-    let bg = if active {
-        p.blue_bg
-    } else if resp.hovered() {
-        p.hover
-    } else {
-        egui::Color32::TRANSPARENT
-    };
-    if bg != egui::Color32::TRANSPARENT {
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::same(8), bg);
-    }
+    // Active tab floats like a card; hovered rows get a soft tint.
+    let radius = egui::CornerRadius::same(12);
     if active {
-        ui.painter().rect_stroke(
-            rect,
-            egui::CornerRadius::same(8),
-            egui::Stroke::new(1.0, p.blue_border),
-            egui::StrokeKind::Inside,
-        );
+        let shadow = egui::epaint::Shadow {
+            offset: [0, 1],
+            blur: 6,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(if ui.visuals().dark_mode { 60 } else { 14 }),
+        };
+        ui.painter().add(shadow.as_shape(rect, radius));
+        let fill = p.surface;
+        ui.painter().rect(rect, radius, fill, egui::Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+    } else if resp.hovered() {
+        ui.painter().rect_filled(rect, radius, p.hover.gamma_multiply(0.6));
     }
+
     let show_actions = active || resp.hovered();
     let icon = 14.0;
-    let text_left = rect.left() + 8.0;
+    let text_left = rect.left() + 12.0;
     let pointer = resp.hover_pos().or(resp.interact_pointer_pos());
     let close_rect = egui::Rect::from_center_size(
         egui::pos2(rect.right() - 8.0 - icon * 0.5, rect.center().y),
@@ -3624,10 +4010,7 @@ fn tab_row(
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     name_ui.set_clip_rect(name_rect);
-    let mut name_text = egui::RichText::new(name).size(13.0).color(name_color);
-    if active {
-        name_text = name_text.strong();
-    }
+    let name_text = egui::RichText::new(name).size(13.0).color(name_color);
     name_ui.add(
         egui::Label::new(name_text)
             .truncate()
@@ -3712,4 +4095,176 @@ fn extract_snippet(input: &str, err_line: usize, err_col: usize) -> Option<Strin
         out.pop();
     }
     Some(out)
+}
+
+/// Height of the toolbar row, level with the macOS window controls.
+const TOP_ROW_H: f32 = 32.0;
+/// Space between the two cards; the split handle sits in it.
+const CARD_GAP: f32 = 8.0;
+const CARD_RADIUS: u8 = 10;
+
+/// Splits the card area at `left_w`, leaving `CARD_GAP` between the two cards.
+fn split_cards(rect: egui::Rect, left_w: f32) -> (egui::Rect, egui::Rect) {
+    let x = (rect.left() + left_w).round();
+    let left = egui::Rect::from_min_max(rect.min, egui::pos2(x - CARD_GAP * 0.5, rect.bottom()));
+    let right = egui::Rect::from_min_max(egui::pos2(x + CARD_GAP * 0.5, rect.top()), rect.max);
+    (left, right)
+}
+
+/// Paints a floating card and returns its body rect.
+fn draw_card(ui: &egui::Ui, rect: egui::Rect, focused: bool) -> egui::Rect {
+    let radius = egui::CornerRadius::same(CARD_RADIUS);
+    let painter = ui.painter();
+    let dark = ui.visuals().dark_mode;
+    // The focused card is brighter and lifted; the other sits back.
+    // Shadows spill over the sidebar and window margins, so paint them unclipped
+    // (a painter derived from `ui` would cut them off at the panel edge).
+    let shadow_painter = ui.ctx().layer_painter(ui.layer_id());
+    let (ambient, contact, hairline) = match (dark, focused) {
+        (false, true) => (20, 10, 26),
+        (false, false) => (12, 8, 26),
+        (true, true) => (110, 60, 0),
+        (true, false) => (60, 40, 0),
+    };
+    // Wide and soft, like a card resting just above the window.
+    shadow_painter.add(
+        egui::epaint::Shadow {
+            // Same shape for both cards so their edges read as level; only strength differs.
+            offset: [0, 4],
+            blur: 22,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(ambient),
+        }
+        .as_shape(rect, radius),
+    );
+    shadow_painter.add(
+        egui::epaint::Shadow {
+            offset: [0, 1],
+            blur: 3,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(contact),
+        }
+        .as_shape(rect, radius),
+    );
+    if hairline > 0 {
+        shadow_painter.rect_stroke(
+            rect,
+            radius,
+            egui::Stroke::new(0.5, egui::Color32::from_rgba_unmultiplied(15, 23, 42, hairline)),
+            egui::StrokeKind::Outside,
+        );
+    }
+    let kind = if focused { Glow::CardFocused } else { Glow::Card };
+    paint_glow_rect(ui.ctx(), painter, rect, radius, kind);
+    let edge = match (dark, focused) {
+        (true, true) => egui::Color32::from_white_alpha(34),
+        (true, false) => egui::Color32::from_white_alpha(16),
+        (false, true) => egui::Color32::WHITE,
+        (false, false) => egui::Color32::from_white_alpha(90),
+    };
+    painter.rect_stroke(rect, radius, egui::Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+    // Inset the body so square content backgrounds stay clear of the rounded border.
+    egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 2.0, rect.top() + 8.0),
+        egui::pos2(rect.right() - 2.0, rect.bottom() - 6.0),
+    )
+}
+
+/// Lets empty chrome move the window; double-click toggles maximize.
+fn window_drag_area(ui: &egui::Ui, rect: egui::Rect, salt: &str) {
+    let resp = ui.interact(rect, egui::Id::new(salt), egui::Sense::click_and_drag());
+    if resp.drag_started() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+    if resp.double_clicked() {
+        let is_max = ui.input(|i| i.viewport().maximized.unwrap_or(false));
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!is_max));
+    }
+}
+
+#[derive(Clone, Copy, Hash, PartialEq)]
+enum Glow {
+    /// Window background behind the sidebar and cards.
+    Backdrop,
+    /// A card that is not focused.
+    Card,
+    CardFocused,
+}
+
+/// Fills `rect` with the window-wide glow: a cool band along the top and a warm tint
+/// low on the right, sampled in window space so it runs unbroken across the sidebar
+/// and cards.
+fn paint_glow_rect(
+    ctx: &egui::Context,
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    radius: egui::CornerRadius,
+    kind: Glow,
+) {
+    let dark = ctx.theme() == egui::Theme::Dark;
+    let id = egui::Id::new(("glow_texture", dark, kind));
+    let texture = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)).unwrap_or_else(|| {
+        let texture = ctx.load_texture("glow", glow_image(dark, kind), egui::TextureOptions::LINEAR);
+        ctx.data_mut(|d| d.insert_temp(id, texture.clone()));
+        texture
+    });
+    let screen = ctx.screen_rect();
+    let norm = |p: egui::Pos2| {
+        egui::pos2(
+            (p.x - screen.left()) / screen.width().max(1.0),
+            (p.y - screen.top()) / screen.height().max(1.0),
+        )
+    };
+    let uv = egui::Rect::from_min_max(norm(rect.min), norm(rect.max));
+    painter.add(
+        egui::epaint::RectShape::filled(rect, radius, egui::Color32::WHITE)
+            .with_texture(texture.id(), uv),
+    );
+}
+
+fn glow_image(dark: bool, kind: Glow) -> egui::ColorImage {
+    // (base, cool glow, warm glow) as RGB, plus glow strengths.
+    let (base, cool, warm, cool_k, warm_k): ([f32; 3], [f32; 3], [f32; 3], f32, f32) =
+        match (dark, kind) {
+            (false, Glow::CardFocused) => ([255.0, 255.0, 255.0], [222.0, 241.0, 250.0], [254.0, 242.0, 232.0], 0.9, 0.55),
+            (false, Glow::Card) => ([248.0, 248.0, 250.0], [222.0, 238.0, 247.0], [250.0, 236.0, 226.0], 0.8, 0.7),
+            (false, Glow::Backdrop) => ([243.0, 243.0, 245.0], [230.0, 241.0, 248.0], [243.0, 236.0, 231.0], 0.8, 0.55),
+            (true, Glow::CardFocused) => ([33.0, 39.0, 54.0], [44.0, 64.0, 90.0], [58.0, 46.0, 50.0], 0.8, 0.5),
+            (true, Glow::Card) => ([24.0, 29.0, 40.0], [34.0, 50.0, 72.0], [44.0, 35.0, 39.0], 0.7, 0.5),
+            (true, Glow::Backdrop) => ([15.0, 18.0, 25.0], [24.0, 36.0, 54.0], [32.0, 25.0, 29.0], 0.7, 0.45),
+        };
+    const N: usize = 64;
+    let mut pixels = Vec::with_capacity(N * N);
+    // Smooth elliptical falloff: 1 at the center, 0 at the ellipse edge.
+    let falloff = |x: f32, y: f32, cx: f32, cy: f32, rx: f32, ry: f32| {
+        let d = (((x - cx) / rx).powi(2) + ((y - cy) / ry).powi(2)).sqrt().clamp(0.0, 1.0);
+        let t = 1.0 - d;
+        t * t * (3.0 - 2.0 * t)
+    };
+    for row in 0..N {
+        for col in 0..N {
+            let x = col as f32 / (N - 1) as f32;
+            let y = row as f32 / (N - 1) as f32;
+            // Cool: a wide, shallow band along the top. Warm: low on the right.
+            let c = falloff(x, y, 0.3, -0.12, 1.1, 0.42) * cool_k;
+            let w = falloff(x, y, 0.85, 1.08, 0.95, 0.7) * warm_k;
+            let mut px = [0u8; 3];
+            for i in 0..3 {
+                let v = base[i] + (cool[i] - base[i]) * c;
+                let v = v + (warm[i] - v) * w;
+                px[i] = v.round().clamp(0.0, 255.0) as u8;
+            }
+            pixels.push(egui::Color32::from_rgb(px[0], px[1], px[2]));
+        }
+    }
+    egui::ColorImage {
+        size: [N, N],
+        pixels,
+    }
+}
+
+/// Rounds to whole physical pixels, so edges stay crisp while animating.
+fn snap_to_pixels(ctx: &egui::Context, v: f32) -> f32 {
+    let ppp = ctx.pixels_per_point();
+    (v * ppp).round() / ppp
 }

@@ -219,13 +219,16 @@ pub(crate) fn show_image_preview(ui: &mut egui::Ui, url: &str) {
                     egui::Frame::default()
                         .fill(p.subtle)
                         .stroke(egui::Stroke::new(1.0, p.border))
-                        .corner_radius(egui::CornerRadius::same(4))
+                        .corner_radius(egui::CornerRadius::same(8))
                         .inner_margin(egui::Margin::same(2))
                         .show(ui, |ui| {
-                            ui.image(egui::load::SizedTexture::new(
-                                texture.id(),
-                                egui::vec2(disp_w, disp_h),
-                            ));
+                            ui.add(
+                                egui::Image::new(egui::load::SizedTexture::new(
+                                    texture.id(),
+                                    egui::vec2(disp_w, disp_h),
+                                ))
+                                .corner_radius(egui::CornerRadius::same(6)),
+                            );
                         });
 
                     ui.add_space(6.0);

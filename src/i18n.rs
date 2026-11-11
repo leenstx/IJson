@@ -23,13 +23,6 @@ impl Language {
         }
     }
 
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::English => "English",
-            Self::Chinese => "中文",
-        }
-    }
-
     pub(crate) fn toggle(self) -> Self {
         match self {
             Self::English => Self::Chinese,
@@ -62,6 +55,36 @@ impl Language {
             "Copied minified JSON" => "已复制压缩后的 JSON",
             "View mode · click to edit" => "查看模式 · 点击切换为编辑",
             "Edit mode · click to view" => "编辑模式 · 点击切换为查看",
+            "Hide sidebar" => "隐藏侧边栏",
+            "Keyboard shortcuts" => "键盘快捷键",
+            "Keyboard Shortcuts" => "键盘快捷键",
+            "Click a row, then press the new keys. Delete clears, Esc cancels." => "点击一行，然后按下新的按键。Delete 清除，Esc 取消。",
+            "Press keys…" => "请按键…",
+            "Not set" => "未设置",
+            "was removed from" => "已从以下操作移除：",
+            "Restore defaults" => "恢复默认",
+            "Done" => "完成",
+            "Copied JSON" => "已复制 JSON",
+            "Show / hide sidebar" => "显示 / 隐藏侧边栏",
+            "New tab" => "新建标签页",
+            "Close tab" => "关闭标签页",
+            "Next tab" => "下一个标签页",
+            "Previous tab" => "上一个标签页",
+            "Switch View / Edit" => "切换查看 / 编辑",
+            "Search" => "搜索",
+            "Expand all" => "全部展开",
+            "Collapse all" => "全部折叠",
+            "Sort keys" => "键排序",
+            "Simplify JSON" => "精简 JSON",
+            "Copy JSON" => "复制 JSON",
+            "Copy minified JSON" => "复制压缩 JSON",
+            "Compare in new tab" => "在新标签页中对比",
+            "Clear editor" => "清空编辑器",
+            "chars" => "字符",
+            "lines" => "行",
+            "⌘↩ save · esc cancel" => "⌘↩ 保存 · esc 取消",
+            "↩ save · esc cancel" => "↩ 保存 · esc 取消",
+            "Show sidebar" => "显示侧边栏",
             "Search keys and values" => "搜索键名和值",
             "Clear search" => "清除搜索",
             "No matches" => "无结果",
@@ -83,7 +106,6 @@ impl Language {
             "Unpin" => "取消置顶",
             "Close" => "关闭",
             "Copy Key" => "复制键名",
-            "Copy JSON" => "复制 JSON",
             "Copy Value" => "复制值",
             "Copy Path" => "复制路径",
             "Download Image" => "下载图片",

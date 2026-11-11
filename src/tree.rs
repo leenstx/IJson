@@ -168,21 +168,15 @@ pub(crate) fn render_tree_node(
                 );
             }
 
-            // Object badge: no count, only arrays show their length.
-            let badge = egui::RichText::new("{}")
-                .monospace()
-                .size(BADGE_FONT_SIZE)
-                .color(colors.badge_obj_fg);
+            // Quiet size hint: plain muted text, so it does not pull the eye from the data.
+            row_label(
+                &mut ui_row,
+                egui::RichText::new(if map.is_empty() { "{}".to_string() } else { format!("{{ {} }}", map.len()) })
+                    .monospace()
+                    .size(BADGE_FONT_SIZE)
+                    .color(colors.colon),
+            );
 
-            let pill_frame = egui::Frame::default()
-                .fill(colors.badge_obj_bg)
-                .stroke(egui::Stroke::new(0.5, colors.badge_obj_stroke))
-                .corner_radius(egui::CornerRadius::same(5))
-                .inner_margin(egui::Margin::symmetric(5, 1));
-
-            pill_frame.show(&mut ui_row, |ui| {
-                row_label(ui, badge);
-            });
             let row_content_w = ui_row.min_rect().right() - rect.left();
             *max_row_w = max_row_w.max(row_content_w);
             ui.expand_to_include_rect(ui_row.min_rect());
@@ -296,26 +290,15 @@ pub(crate) fn render_tree_node(
                 );
             }
 
-            // Array Badge Pill
-            let badge_text = if count == 0 {
-                "[]".to_string()
-            } else {
-                format!("[ {} ]", count)
-            };
-            let badge = egui::RichText::new(badge_text)
-                .monospace()
-                .size(BADGE_FONT_SIZE)
-                .color(colors.badge_arr_fg);
+            // Quiet size hint: plain muted text, so it does not pull the eye from the data.
+            row_label(
+                &mut ui_row,
+                egui::RichText::new(if count == 0 { "[]".to_string() } else { format!("[ {} ]", count) })
+                    .monospace()
+                    .size(BADGE_FONT_SIZE)
+                    .color(colors.colon),
+            );
 
-            let pill_frame = egui::Frame::default()
-                .fill(colors.badge_arr_bg)
-                .stroke(egui::Stroke::new(0.5, colors.badge_arr_stroke))
-                .corner_radius(egui::CornerRadius::same(5))
-                .inner_margin(egui::Margin::symmetric(5, 1));
-
-            pill_frame.show(&mut ui_row, |ui| {
-                row_label(ui, badge);
-            });
             let row_content_w = ui_row.min_rect().right() - rect.left();
             *max_row_w = max_row_w.max(row_content_w);
             ui.expand_to_include_rect(ui_row.min_rect());

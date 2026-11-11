@@ -42,6 +42,9 @@ pub(crate) enum LucideIcon {
     Bookmark,
     BookmarkOff,
     Download,
+    PanelLeft,
+    Languages,
+    Command,
 }
 
 #[derive(Clone, Copy)]
@@ -148,6 +151,21 @@ fn icon_elements(icon: LucideIcon) -> &'static [LucideElem] {
             LucideElem::Path("M20 12h2"),
             LucideElem::Path("m6.34 17.66-1.41 1.41"),
             LucideElem::Path("m19.07 4.93-1.41 1.41"),
+        ],
+        LucideIcon::Command => &[
+            LucideElem::Path("M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"),
+        ],
+        LucideIcon::Languages => &[
+            LucideElem::Path("m5 8 6 6"),
+            LucideElem::Path("m4 14 6-6 2-3"),
+            LucideElem::Path("M2 5h12"),
+            LucideElem::Path("M7 2h1"),
+            LucideElem::Path("m22 22-5-10-5 10"),
+            LucideElem::Path("M14 18h6"),
+        ],
+        LucideIcon::PanelLeft => &[
+            LucideElem::Rect(3.0, 3.0, 18.0, 18.0, 2.0),
+            LucideElem::Path("M9 3v18"),
         ],
         LucideIcon::Columns2 => &[
             LucideElem::Rect(3.0, 3.0, 18.0, 18.0, 2.0),

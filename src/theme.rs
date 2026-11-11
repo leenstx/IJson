@@ -97,7 +97,7 @@ impl UiColors {
             Self {
                 titlebar: rgb(23, 29, 41),
                 canvas: rgb(17, 21, 29), surface: rgb(27, 33, 48),
-                sidebar: rgb(21, 27, 39), subtle: rgb(35, 44, 61),
+                sidebar: rgb(17, 21, 29), subtle: rgb(35, 44, 61),
                 hover: rgb(48, 61, 82), pressed: rgb(64, 81, 107),
                 border: rgb(52, 65, 86), text: rgb(226, 232, 240),
                 strong: rgb(241, 245, 249), muted: rgb(168, 182, 204),
@@ -111,8 +111,8 @@ impl UiColors {
         } else {
             Self {
                 titlebar: rgb(236, 238, 242),
-                canvas: rgb(246, 248, 250), surface: egui::Color32::WHITE,
-                sidebar: rgb(243, 244, 248), subtle: rgb(241, 245, 249),
+                canvas: rgb(236, 238, 242), surface: egui::Color32::WHITE,
+                sidebar: rgb(236, 238, 242), subtle: rgb(241, 245, 249),
                 hover: rgb(226, 232, 240), pressed: rgb(203, 213, 225),
                 border: rgb(226, 232, 240), text: rgb(30, 41, 59),
                 strong: rgb(15, 23, 42), muted: rgb(100, 116, 139),
@@ -174,21 +174,31 @@ pub(crate) fn setup_theme(ctx: &egui::Context) {
         off_duration: 0.45,
     };
 
+    // Popups, menus, tooltips and dialogs match the floating cards:
+    // a hairline outline and a wide, soft shadow.
+    let dark = theme == egui::Theme::Dark;
     visuals.window_fill = p.surface;
-    visuals.window_stroke = egui::Stroke::new(1.0, p.border);
-    visuals.window_corner_radius = egui::CornerRadius::same(12);
-    visuals.menu_corner_radius = egui::CornerRadius::same(10);
+    visuals.window_stroke = egui::Stroke::new(
+        if dark { 1.0 } else { 0.5 },
+        if dark {
+            egui::Color32::from_white_alpha(24)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(15, 23, 42, 36)
+        },
+    );
+    visuals.window_corner_radius = egui::CornerRadius::same(14);
+    visuals.menu_corner_radius = egui::CornerRadius::same(12);
     visuals.popup_shadow = egui::epaint::Shadow {
         offset: [0, 8],
-        blur: 22,
-        spread: 0,
-        color: egui::Color32::from_black_alpha(32),
-    };
-    visuals.window_shadow = egui::epaint::Shadow {
-        offset: [0, 12],
         blur: 28,
         spread: 0,
-        color: egui::Color32::from_black_alpha(36),
+        color: egui::Color32::from_black_alpha(if dark { 110 } else { 26 }),
+    };
+    visuals.window_shadow = egui::epaint::Shadow {
+        offset: [0, 18],
+        blur: 44,
+        spread: 0,
+        color: egui::Color32::from_black_alpha(if dark { 140 } else { 34 }),
     };
 
     ctx.set_visuals_of(theme, visuals);

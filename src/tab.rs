@@ -11,7 +11,7 @@ use crate::model::{
     update_value_at_path, EditModalState, ParseError, SortMode, ValueTypeTag,
 };
 
-pub(crate) const TAB_RAIL_WIDTH: f32 = 148.0;
+pub(crate) const TAB_RAIL_WIDTH: f32 = 200.0;
 
 pub(crate) struct RequestLoadingState {
     pub(crate) target_url: String,
@@ -55,6 +55,13 @@ pub(crate) struct JsonTab {
     pub(crate) search_query: String,
     pub(crate) search_matches: Vec<String>,
     pub(crate) search_index: usize,
+    /// Edit mode: match ranges (char indices) in `editor_view`, the current one, and
+    /// what they were computed from.
+    pub(crate) editor_hits: Vec<(usize, usize)>,
+    pub(crate) editor_hit_index: usize,
+    pub(crate) editor_hits_key: Option<(String, usize, u64)>,
+    /// Scroll the current editor match into view on the next frame.
+    pub(crate) reveal_editor_hit: bool,
     pub(crate) reveal_search_match: bool,
 
     pub(crate) selected_path: Option<String>,
@@ -70,6 +77,8 @@ pub(crate) struct JsonTab {
     pub(crate) editor_content_width: f32,
     pub(crate) tree_scroll_x: f32,
     pub(crate) tree_content_width: f32,
+    /// Tree rows that fit in the tree card, measured while drawing; 0 until measured.
+    pub(crate) tree_fit_rows: usize,
     pub(crate) editor_last_interaction: f64,
     // True after the user clicks into the editor, until they click outside it.
     pub(crate) editor_editing: bool,
@@ -124,6 +133,10 @@ impl JsonTab {
             search_query: String::new(),
             search_matches: Vec::new(),
             search_index: 0,
+            editor_hits: Vec::new(),
+            editor_hit_index: 0,
+            editor_hits_key: None,
+            reveal_editor_hit: false,
             reveal_search_match: false,
             selected_path: None,
             edit_modal: None,
@@ -135,6 +148,7 @@ impl JsonTab {
             editor_content_width: 0.0,
             tree_scroll_x: 0.0,
             tree_content_width: 0.0,
+            tree_fit_rows: 0,
             editor_last_interaction: 0.0,
             editor_editing: false,
             editor_card_rect: egui::Rect::NOTHING,
@@ -309,8 +323,19 @@ impl JsonTab {
                 self.parsed = Some(v);
                 self.parse_error = None;
                 if reset_collapse {
-                    // Default display Level 1, unless a saved depth was restored.
-                    self.expand_to_depth(self.current_depth);
+                    // Expand everything when the whole tree fits on screen;
+                    // otherwise open it to the current level.
+                    let fit = if self.tree_fit_rows > 0 { self.tree_fit_rows } else { 39 };
+                    let fits = self
+                        .parsed
+                        .as_ref()
+                        .is_some_and(|v| tree_row_count(v, fit + 1) <= fit);
+                    if fits {
+                        self.collapsed.clear();
+                        self.dirty = true;
+                    } else {
+                        self.expand_to_depth(self.current_depth);
+                    }
                 }
             }
             Err(e) => {
@@ -545,7 +570,56 @@ impl JsonTab {
         }
     }
 
+    /// Recomputes editor matches when the query or the editor text changed.
+    pub(crate) fn refresh_editor_hits(&mut self) {
+        let query = self.search_query.trim().to_lowercase();
+        let key = (query.clone(), self.editor_view.len(), self.revision);
+        if self.editor_hits_key.as_ref() == Some(&key) {
+            return;
+        }
+        let query_changed = self.editor_hits_key.as_ref().map(|k| &k.0) != Some(&query);
+        self.editor_hits_key = Some(key);
+        self.editor_hits.clear();
+        if query.is_empty() {
+            self.editor_hit_index = 0;
+            return;
+        }
+        // Lowercase char by char so indices line up with the editor's characters.
+        let lower = |c: char| c.to_lowercase().next().unwrap_or(c);
+        let text: Vec<char> = self.editor_view.chars().map(lower).collect();
+        let needle: Vec<char> = query.chars().map(lower).collect();
+        let mut i = 0;
+        while i + needle.len() <= text.len() && self.editor_hits.len() < 10_000 {
+            if text[i..i + needle.len()] == needle[..] {
+                self.editor_hits.push((i, i + needle.len()));
+                i += needle.len();
+            } else {
+                i += 1;
+            }
+        }
+        if query_changed || self.editor_hit_index >= self.editor_hits.len() {
+            self.editor_hit_index = 0;
+            self.reveal_editor_hit = query_changed && !self.editor_hits.is_empty();
+        }
+    }
+
+    /// Number of matches and the current one, for whichever view is showing.
+    pub(crate) fn search_status(&self) -> (usize, usize) {
+        if self.edit_mode {
+            (self.editor_hits.len(), self.editor_hit_index)
+        } else {
+            (self.search_matches.len(), self.search_index)
+        }
+    }
+
     pub(crate) fn search_next(&mut self) {
+        if self.edit_mode {
+            if !self.editor_hits.is_empty() {
+                self.editor_hit_index = (self.editor_hit_index + 1) % self.editor_hits.len();
+                self.reveal_editor_hit = true;
+            }
+            return;
+        }
         if self.search_matches.is_empty() {
             return;
         }
@@ -556,6 +630,14 @@ impl JsonTab {
     }
 
     pub(crate) fn search_prev(&mut self) {
+        if self.edit_mode {
+            let n = self.editor_hits.len();
+            if n > 0 {
+                self.editor_hit_index = (self.editor_hit_index + n - 1) % n;
+                self.reveal_editor_hit = true;
+            }
+            return;
+        }
         if self.search_matches.is_empty() {
             return;
         }
@@ -571,7 +653,7 @@ impl JsonTab {
 
     pub(crate) fn open_edit_modal(&mut self, path: &str, key_label: &str, val: &Value) {
         let (input_text, target_type) = match val {
-            Value::String(s) => (s.clone(), ValueTypeTag::String),
+            Value::String(s) => (string_to_editable(s), ValueTypeTag::String),
             Value::Number(n) => (n.to_string(), ValueTypeTag::Number),
             Value::Bool(b) => (b.to_string(), ValueTypeTag::Bool),
             Value::Null => ("null".to_string(), ValueTypeTag::Null),
@@ -596,7 +678,7 @@ impl JsonTab {
         };
         let path = modal.path.clone();
         let parsed_val: Result<Value, String> = match modal.target_type {
-            ValueTypeTag::String => Ok(Value::String(modal.input_text.clone())),
+            ValueTypeTag::String => Ok(Value::String(editable_to_string(&modal.input_text))),
             ValueTypeTag::Number => {
                 if let Ok(n) = modal.input_text.parse::<i64>() {
                     Ok(Value::Number(n.into()))
@@ -950,4 +1032,76 @@ fn format_local_stamp(secs: i64) -> String {
     let min = (secs % 3600) / 60;
     let sec = secs % 60;
     format!("{:02}.{:02}:{:02}:{:02}", day, hour, min, sec)
+}
+
+/// Rows the fully expanded tree needs (one per value), counting at most up to `limit`.
+fn tree_row_count(v: &Value, limit: usize) -> usize {
+    fn walk(v: &Value, count: &mut usize, limit: usize) {
+        *count += 1;
+        if *count >= limit {
+            return;
+        }
+        match v {
+            Value::Object(map) => {
+                for child in map.values() {
+                    walk(child, count, limit);
+                    if *count >= limit {
+                        return;
+                    }
+                }
+            }
+            Value::Array(arr) => {
+                for child in arr {
+                    walk(child, count, limit);
+                    if *count >= limit {
+                        return;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut count = 0;
+    walk(v, &mut count, limit);
+    count
+}
+
+/// A string as shown in the edit dialog. Newlines and tabs stay real (the text area
+/// shows them as line breaks and indentation); other control characters, which would
+/// be invisible, become their Unicode "control picture" (e.g. CR -> U+240D).
+pub(crate) fn string_to_editable(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '\n' | '\t' => c,
+            '\u{0}'..='\u{1f}' => char::from_u32(0x2400 + c as u32).unwrap_or(c),
+            '\u{7f}' => '\u{2421}',
+            _ => c,
+        })
+        .collect()
+}
+
+/// Inverse of [`string_to_editable`]. serde_json escapes the result when saving.
+pub(crate) fn editable_to_string(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '\u{2400}'..='\u{241f}' => char::from_u32(c as u32 - 0x2400).unwrap_or(c),
+            '\u{2421}' => '\u{7f}',
+            _ => c,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod edit_string_tests {
+    use super::{editable_to_string, string_to_editable};
+
+    #[test]
+    fn round_trips_control_characters() {
+        let original = "a\nb\tc\r\u{1}\u{7f} \\n literal backslash-n";
+        let shown = string_to_editable(original);
+        // Newlines and tabs stay real; invisible control characters become visible symbols.
+        assert!(shown.contains('\n') && shown.contains('\t'));
+        assert!(!shown.contains('\r') && !shown.contains('\u{1}'));
+        assert_eq!(editable_to_string(&shown), original);
+    }
 }
