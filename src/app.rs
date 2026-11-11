@@ -1419,7 +1419,21 @@ impl JsonViewerApp {
                         }
                     }
                     let node_focused = self.node_focused;
-                    let tree_body = draw_card(ui, left_rect, !node_focused);
+                    let tab_name = self.tabs[self.active].name.clone();
+                    let node_title = self.tabs[self.active]
+                        .selected_path
+                        .clone()
+                        .unwrap_or_else(|| tr(ui.ctx(), "Selection").to_string());
+                    draw_card(ui, left_rect, !node_focused);
+                    let tree_body = draw_card_header(
+                        ui,
+                        left_rect,
+                        LucideIcon::Braces,
+                        p.blue,
+                        &tab_name,
+                        !node_focused,
+                        p,
+                    );
                     let mut tree_ui = ui.new_child(
                         egui::UiBuilder::default()
                             .max_rect(tree_body)
@@ -1427,12 +1441,43 @@ impl JsonViewerApp {
                     );
                     self.render_tree_card(&mut tree_ui, tree_body, colors);
 
-                    let node_body = draw_card(ui, right_rect, node_focused);
+                    draw_card(ui, right_rect, node_focused);
+                    let node_body = draw_card_header(
+                        ui,
+                        right_rect,
+                        LucideIcon::Route,
+                        p.purple,
+                        &node_title,
+                        node_focused,
+                        p,
+                    );
                     let mut node_ui = ui.new_child(
                         egui::UiBuilder::default()
                             .max_rect(node_body)
                             .layout(egui::Layout::top_down(egui::Align::LEFT)),
                     );
+                    // Clicking the title copies the selected node's path.
+                    if let Some(path) = self.tabs[self.active].selected_path.clone() {
+                        let header = egui::Rect::from_min_size(
+                            right_rect.min,
+                            egui::vec2(right_rect.width(), CARD_HEADER_H),
+                        );
+                        let resp = ui
+                            .interact(header, egui::Id::new("node_title_copy"), egui::Sense::click())
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text(tr(ui.ctx(), "Click to copy path"));
+                        if resp.clicked() {
+                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                let _ = cb.set_text(path);
+                            }
+                            let tab = &mut self.tabs[self.active];
+                            tab.copy_notice = Some((
+                                tr(ui.ctx(), "Copied path").to_string(),
+                                std::time::Instant::now(),
+                            ));
+                            tab.copy_notice_in_node = true;
+                        }
+                    }
                     self.tabs[self.active].render_node_card(&mut node_ui, node_body, colors);
 
                     // Register last so the divider takes priority over both cards.
@@ -2031,7 +2076,8 @@ impl JsonTab {
                         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                         .auto_shrink([false; 2])
                         .show(ui, |ui| {
-                            ui.add_space(6.0);
+                            // Puts the first line level with the first row of the tree on the left.
+                            ui.add_space(4.5);
                             ui.add(
                                 egui::Label::new(
                                     egui::RichText::new(text)
@@ -2043,6 +2089,9 @@ impl JsonTab {
                                 .selectable(true),
                             );
                         });
+                    if self.copy_notice_in_node {
+                        self.draw_copy_notice(ui, card_rect, p);
+                    }
                     return;
                 }
 
@@ -4368,6 +4417,57 @@ fn draw_card(ui: &egui::Ui, rect: egui::Rect, focused: bool) -> egui::Rect {
     // Inset the body so square content backgrounds stay clear of the rounded border.
     egui::Rect::from_min_max(
         egui::pos2(rect.left() + 2.0, rect.top() + 8.0),
+        egui::pos2(rect.right() - 2.0, rect.bottom() - 6.0),
+    )
+}
+
+const CARD_HEADER_H: f32 = 32.0;
+
+/// Paints an icon + title header across the top of a card drawn by `draw_card`,
+/// and returns the body rect below it.
+fn draw_card_header(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    icon: LucideIcon,
+    icon_color: egui::Color32,
+    title: &str,
+    focused: bool,
+    p: UiColors,
+) -> egui::Rect {
+    let painter = ui.painter();
+    let title_color = if focused { p.text } else { p.muted };
+    let icon_color = if focused { icon_color } else { icon_color.gamma_multiply(0.7) };
+
+    let header = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), CARD_HEADER_H));
+    let icon_rect = egui::Rect::from_center_size(
+        egui::pos2(header.left() + 18.0, header.center().y),
+        egui::vec2(14.0, 14.0),
+    );
+    draw_lucide_icon(painter, icon_rect, icon, icon_color);
+    let text_rect = egui::Rect::from_min_max(
+        egui::pos2(icon_rect.right() + 8.0, header.top()),
+        egui::pos2(header.right() - 12.0, header.bottom()),
+    );
+    let galley = ui.fonts(|f| {
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            title.to_owned(),
+            egui::FontId::proportional(13.0),
+            title_color,
+        );
+        job.wrap.max_width = text_rect.width().max(0.0);
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        f.layout_job(job)
+    });
+    painter.with_clip_rect(text_rect).galley(
+        egui::pos2(text_rect.left(), text_rect.center().y - galley.size().y * 0.5),
+        galley,
+        title_color,
+    );
+
+    // Inset the body so square content backgrounds stay clear of the rounded border.
+    egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 2.0, header.bottom()),
         egui::pos2(rect.right() - 2.0, rect.bottom() - 6.0),
     )
 }
