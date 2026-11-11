@@ -1983,6 +1983,25 @@ impl JsonTab {
                     });
                 };
                 let Some(parsed) = self.parsed.take() else {
+                    // No valid JSON yet: say what this panel is for and what the app can do.
+                    let ctx = ui.ctx().clone();
+                    intro_panel(
+                        ui,
+                        p,
+                        "features",
+                        "What you can do",
+                        "Once JSON is loaded, select a node on the left to inspect it here.",
+                        &[
+                            IntroRow::action(&ctx, Action::Search),
+                            IntroRow::action(&ctx, Action::Sort),
+                            IntroRow::action(&ctx, Action::Simplify),
+                            IntroRow::action(&ctx, Action::Compare),
+                            IntroRow::action(&ctx, Action::CopyJson),
+                            IntroRow::tip("Click a value to copy it, double-click a key to copy the key"),
+                            IntroRow::tip("Right-click a node to copy its path, edit or delete it"),
+                            IntroRow::tip("Image URLs and Base64 images are previewed inline"),
+                        ],
+                    );
                     return;
                 };
                 let Some(path) = self.selected_path.clone() else {
@@ -3482,8 +3501,32 @@ impl JsonViewerApp {
             }
 
             if self.parsed.is_none() {
-                // Empty data: no text prompts, allocate full space to stretch top-to-bottom
-                ui.allocate_space(ui.available_size());
+                if self.request_loading.is_some() {
+                    // The response replaces this card as soon as it arrives.
+                    ui.centered_and_justified(|ui| {
+                        ui.label(
+                            egui::RichText::new(tr(ui.ctx(), "Loading JSON from request..."))
+                                .color(p.faint),
+                        );
+                    });
+                    return;
+                }
+                // Nothing loaded yet: explain how to get JSON into the tab.
+                let ctx = ui.ctx().clone();
+                intro_panel(
+                    ui,
+                    p,
+                    "start",
+                    "IJson",
+                    "A fast, native JSON viewer and editor",
+                    &[
+                        IntroRow { text: "Paste JSON from the clipboard", keys: paste_keys() },
+                        IntroRow::tip("Drop a JSON file onto the window"),
+                        IntroRow::tip("Paste a URL or cURL command to load its response"),
+                        IntroRow::keyed(&ctx, Action::ToggleEditMode, "Type or edit JSON in Edit mode"),
+                        IntroRow::action(&ctx, Action::NewTab),
+                    ],
+                );
                 return;
             }
 
@@ -3542,6 +3585,145 @@ impl JsonViewerApp {
         });
     }
 
+}
+
+/// One line of an intro panel: a description, with the keys that trigger it on the right.
+struct IntroRow {
+    text: &'static str,
+    keys: Vec<String>,
+}
+
+impl IntroRow {
+    fn tip(text: &'static str) -> Self {
+        Self { text, keys: Vec::new() }
+    }
+
+    /// Shows the action's current shortcut, so rebinding it updates the intro too.
+    fn keyed(ctx: &egui::Context, action: Action, text: &'static str) -> Self {
+        let keys = ctx
+            .data(|d| d.get_temp::<Keymap>(egui::Id::new("keymap")))
+            .and_then(|k| k.get(action))
+            .map(|sc| sc.keys())
+            .unwrap_or_default();
+        Self { text, keys }
+    }
+
+    fn action(ctx: &egui::Context, action: Action) -> Self {
+        Self::keyed(ctx, action, action.label())
+    }
+}
+
+/// Paste is handled by the system shortcut, not the keymap.
+fn paste_keys() -> Vec<String> {
+    let modifier = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl" };
+    vec![modifier.to_string(), "V".to_string()]
+}
+
+/// Fills an otherwise empty card with a title, a subtitle and a list of hints.
+fn intro_panel(
+    ui: &mut egui::Ui,
+    p: UiColors,
+    salt: &'static str,
+    title: &str,
+    subtitle: &str,
+    rows: &[IntroRow],
+) {
+    let avail = ui.available_size();
+    let width = (avail.x - 32.0).clamp(160.0, 380.0);
+    // Last frame's height, used to place the block just above the card's middle.
+    let height_id = egui::Id::new(("intro_height", salt));
+    let last_h = ui.ctx().data(|d| d.get_temp::<f32>(height_id)).unwrap_or(0.0);
+
+    egui::ScrollArea::vertical()
+        .id_salt(("intro_scroll", salt))
+        .auto_shrink([false; 2])
+        .show(ui, |ui| {
+            ui.add_space(((avail.y - last_h) * 0.4).max(20.0));
+            let side = ((ui.available_width() - width) * 0.5).max(0.0);
+            ui.horizontal(|ui| {
+                ui.add_space(side);
+                let block = ui.vertical(|ui| {
+                    ui.set_width(width);
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.label(
+                        egui::RichText::new(tr(ui.ctx(), title))
+                            .size(20.0)
+                            .strong()
+                            .color(p.strong),
+                    );
+                    ui.add_space(4.0);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(tr(ui.ctx(), subtitle)).size(12.5).color(p.muted),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(14.0);
+                    for (i, row) in rows.iter().enumerate() {
+                        if i > 0 {
+                            let top = ui.cursor().top();
+                            ui.painter().hline(
+                                ui.max_rect().x_range(),
+                                top,
+                                egui::Stroke::new(1.0, p.border.gamma_multiply(0.6)),
+                            );
+                        }
+                        intro_row(ui, p, row);
+                    }
+                });
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(height_id, block.response.rect.height()));
+            });
+            ui.add_space(20.0);
+        });
+}
+
+fn intro_row(ui: &mut egui::Ui, p: UiColors, row: &IntroRow) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 32.0),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            ui.set_min_height(32.0);
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for key in row.keys.iter().rev() {
+                keycap(ui, p, key);
+            }
+            if !row.keys.is_empty() {
+                ui.add_space(8.0);
+            }
+            // The description takes the rest of the row and wraps when the card is narrow.
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(tr(ui.ctx(), row.text)).size(13.0).color(p.text),
+                    )
+                    .wrap(),
+                );
+            });
+        },
+    );
+}
+
+/// A single key drawn as a keycap, matching the shortcut settings panel.
+fn keycap(ui: &mut egui::Ui, p: UiColors, key: &str) {
+    let galley =
+        ui.painter().layout_no_wrap(key.to_owned(), egui::FontId::proportional(12.0), p.text);
+    let w = (galley.size().x + 10.0).max(22.0);
+    let (cap, _) = ui.allocate_exact_size(egui::vec2(w, 22.0), egui::Sense::hover());
+    // Slightly deeper bottom edge reads as a key.
+    ui.painter().rect_filled(
+        cap.translate(egui::vec2(0.0, 1.0)),
+        egui::CornerRadius::same(5),
+        p.border,
+    );
+    ui.painter().rect(
+        cap,
+        egui::CornerRadius::same(5),
+        p.subtle,
+        egui::Stroke::new(1.0, p.border),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().galley(cap.center() - galley.size() * 0.5, galley, p.text);
 }
 
 /// Per-panel state for a scrollable JSON tree. Both View-mode panels use this so
@@ -4267,4 +4449,46 @@ fn glow_image(dark: bool, kind: Glow) -> egui::ColorImage {
 fn snap_to_pixels(ctx: &egui::Context, v: f32) -> f32 {
     let ppp = ctx.pixels_per_point();
     (v * ppp).round() / ppp
+}
+
+#[cfg(test)]
+mod intro_tests {
+    use super::*;
+
+    /// Lays the intro out in a card of the given size and returns the block's height.
+    fn intro_height(card: egui::Vec2) -> f32 {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, card)),
+            ..Default::default()
+        };
+        // Two frames: the second one uses the height measured by the first.
+        for _ in 0..2 {
+            let _ = ctx.run(input.clone(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    intro_panel(
+                        ui,
+                        UiColors::current(ui),
+                        "test",
+                        "IJson",
+                        "A fast, native JSON viewer and editor",
+                        &[
+                            IntroRow { text: "Paste JSON from the clipboard", keys: paste_keys() },
+                            IntroRow::tip("Paste a URL or cURL command to load its response"),
+                        ],
+                    );
+                });
+            });
+        }
+        ctx.data(|d| d.get_temp::<f32>(egui::Id::new(("intro_height", "test")))).unwrap()
+    }
+
+    #[test]
+    fn intro_fits_wide_and_narrow_cards() {
+        // Title + subtitle + two 32pt rows; a narrow card may wrap onto extra lines.
+        let wide = intro_height(egui::vec2(700.0, 500.0));
+        assert!((100.0..150.0).contains(&wide), "wide: {wide}");
+        let narrow = intro_height(egui::vec2(240.0, 500.0));
+        assert!((wide..220.0).contains(&narrow), "narrow: {narrow}");
+    }
 }
