@@ -1997,9 +1997,11 @@ impl JsonTab {
                             IntroRow::action(&ctx, Action::Simplify),
                             IntroRow::action(&ctx, Action::Compare),
                             IntroRow::action(&ctx, Action::CopyJson),
-                            IntroRow::tip("Click a value to copy it, double-click a key to copy the key"),
-                            IntroRow::tip("Right-click a node to copy its path, edit or delete it"),
-                            IntroRow::tip("Image URLs and Base64 images are previewed inline"),
+                            IntroRow::mouse("Copy a value", false, "Double-click"),
+                            IntroRow::mouse("Copy a key", true, "Click"),
+                            IntroRow::mouse("Edit a value", true, "Double-click"),
+                            IntroRow::tip("Right-click a node for more actions"),
+                            IntroRow::tip("Hover over an image URL or Base64 image to preview it"),
                         ],
                     );
                     return;
@@ -3611,12 +3613,29 @@ impl IntroRow {
     fn action(ctx: &egui::Context, action: Action) -> Self {
         Self::keyed(ctx, action, action.label())
     }
+
+    /// A mouse gesture on a tree row, optionally with the command key held.
+    fn mouse(text: &'static str, with_cmd: bool, gesture: &str) -> Self {
+        let mut keys = Vec::new();
+        if with_cmd {
+            keys.push(command_key().to_string());
+        }
+        keys.push(gesture.to_string());
+        Self { text, keys }
+    }
 }
 
 /// Paste is handled by the system shortcut, not the keymap.
 fn paste_keys() -> Vec<String> {
-    let modifier = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl" };
-    vec![modifier.to_string(), "V".to_string()]
+    vec![command_key().to_string(), "V".to_string()]
+}
+
+fn command_key() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "⌘"
+    } else {
+        "Ctrl"
+    }
 }
 
 /// Fills an otherwise empty card with a title, a subtitle and a list of hints.
@@ -3706,8 +3725,9 @@ fn intro_row(ui: &mut egui::Ui, p: UiColors, row: &IntroRow) {
 
 /// A single key drawn as a keycap, matching the shortcut settings panel.
 fn keycap(ui: &mut egui::Ui, p: UiColors, key: &str) {
-    let galley =
-        ui.painter().layout_no_wrap(key.to_owned(), egui::FontId::proportional(12.0), p.text);
+    // Key names stay as they are; gestures such as "Double-click" are translated.
+    let label = tr(ui.ctx(), key).to_owned();
+    let galley = ui.painter().layout_no_wrap(label, egui::FontId::proportional(12.0), p.text);
     let w = (galley.size().x + 10.0).max(22.0);
     let (cap, _) = ui.allocate_exact_size(egui::vec2(w, 22.0), egui::Sense::hover());
     // Slightly deeper bottom edge reads as a key.
