@@ -45,6 +45,7 @@ pub(crate) enum LucideIcon {
     PanelLeft,
     Languages,
     Command,
+    MopSparkles,
 }
 
 #[derive(Clone, Copy)]
@@ -56,6 +57,18 @@ pub(crate) enum LucideElem {
 
 fn icon_elements(icon: LucideIcon) -> &'static [LucideElem] {
     match icon {
+        LucideIcon::MopSparkles => &[
+            LucideElem::Path("M10 22a3 3 0 0 1 -3 -3"),
+            LucideElem::Path("M10 22c2.761 0 5 -1.79 5 -4c-4.42 0 -4.08 -5 -8.5 -5a4.501 4.501 0 0 0 0 9z"),
+            LucideElem::Path("M10 3H8"),
+            LucideElem::Path("M12.5 11.5L22 2"),
+            LucideElem::Path("M20 13v4"),
+            LucideElem::Path("M22 15h-4"),
+            LucideElem::Path("M4 5v4"),
+            LucideElem::Path("M6 7H2"),
+            LucideElem::Path("m6.98 13.02 2.665 -2.664a1.21 1.21 0 0 1 1.71 0l2.29 2.288a1.21 1.21 0 0 1 0 1.712l-2.088 2.087"),
+            LucideElem::Path("M9 2v2"),
+        ],
         LucideIcon::Plus => &[
             LucideElem::Path("M5 12h14"),
             LucideElem::Path("M12 5v14"),

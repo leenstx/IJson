@@ -141,13 +141,16 @@ pub(crate) fn render_tree_node(
                 egui::Rect::from_center_size(chev_rect.center(), egui::vec2(12.0, 12.0));
             draw_lucide_icon(ui_row.painter(), icon_rect, chev_icon, chevron_color);
 
-            // Click node or chevron to expand/collapse
-            if resp.clicked() || chev_resp.clicked() {
+            // Double-click node or single-click chevron to expand/collapse.
+            // Single-click on the node row selects it without toggling collapse.
+            if chev_resp.clicked() || resp.double_clicked() {
                 if is_collapsed {
                     collapsed.remove(path);
                 } else {
                     collapsed.insert(path.to_string());
                 }
+                *action = Some(TreeAction::Select(path.to_string()));
+            } else if resp.clicked() {
                 *action = Some(TreeAction::Select(path.to_string()));
             }
 
@@ -263,13 +266,16 @@ pub(crate) fn render_tree_node(
                 egui::Rect::from_center_size(chev_rect.center(), egui::vec2(12.0, 12.0));
             draw_lucide_icon(ui_row.painter(), icon_rect, chev_icon, chevron_color);
 
-            // Click node or chevron to expand/collapse
-            if resp.clicked() || chev_resp.clicked() {
+            // Double-click node or single-click chevron to expand/collapse.
+            // Single-click on the node row selects it without toggling collapse.
+            if chev_resp.clicked() || resp.double_clicked() {
                 if is_collapsed {
                     collapsed.remove(path);
                 } else {
                     collapsed.insert(path.to_string());
                 }
+                *action = Some(TreeAction::Select(path.to_string()));
+            } else if resp.clicked() {
                 *action = Some(TreeAction::Select(path.to_string()));
             }
 

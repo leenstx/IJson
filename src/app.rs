@@ -346,6 +346,9 @@ impl JsonViewerApp {
                 tab.start_request_loading(text, false, ctx);
             } else {
                 tab.replace_document(text);
+                if tab.parse_error.is_some() {
+                    tab.set_edit_mode(ctx, true);
+                }
             }
         }
 
@@ -1635,6 +1638,9 @@ impl JsonViewerApp {
             };
             self.add_tab(ctx);
             self.load_text(content);
+            if self.tabs[self.active].parse_error.is_some() {
+                self.tabs[self.active].set_edit_mode(ctx, true);
+            }
         }
     }
 
@@ -1879,12 +1885,12 @@ impl JsonViewerApp {
             }
             Ok(_) => false,
         };
+        let editor_has_focus = ctx.memory(|m| m.has_focus(json_editor_id(tab_id)));
+        let for_editor_paste = self.edit_mode || self.editor_editing || editor_has_focus;
         if needs_unescape {
             if let Some((_, unescaped)) = try_unescape_json(&text) {
                 text = unescaped;
             } else if is_request_candidate(&text) {
-                let editor_has_focus = ctx.memory(|m| m.has_focus(json_editor_id(tab_id)));
-                let for_editor_paste = self.editor_editing || editor_has_focus;
                 self.start_request_loading(text, for_editor_paste, ctx);
                 ctx.input_mut(|i| {
                     i.events.retain(|e| !matches!(e, egui::Event::Paste(_)));
@@ -1895,8 +1901,7 @@ impl JsonViewerApp {
             }
         }
 
-        let editor_has_focus = ctx.memory(|m| m.has_focus(json_editor_id(tab_id)));
-        if self.editor_editing || editor_has_focus {
+        if for_editor_paste {
             // Preserve insertion/selection semantics before formatting the document.
             if !text.is_empty() {
                 self.paste_into_editor(ctx, &text);
@@ -1904,6 +1909,9 @@ impl JsonViewerApp {
         } else if !text.trim().is_empty() {
             self.replace_document(text);
             self.editor_editing = false;
+            if self.parse_error.is_some() {
+                self.set_edit_mode(ctx, true);
+            }
         }
 
         ctx.input_mut(|i| {
@@ -1987,14 +1995,9 @@ impl JsonTab {
         let mut ccursor = egui::text::CCursor::new(start_idx);
         self.editor_view
             .insert_text_at(&mut ccursor, text, usize::MAX);
-        let inserted_view = self.editor_view.clone();
-        self.commit_editor_view(true);
+        self.commit_editor_view(false);
 
         let max = self.editor_view.chars().count();
-        // Formatting changes offsets; keep the caret within the rebuilt editor.
-        if self.editor_view != inserted_view {
-            ccursor.index = max;
-        }
         state
             .cursor
             .set_char_range(Some(egui::text::CCursorRange::one(
@@ -2007,10 +2010,14 @@ impl JsonTab {
 
     pub(crate) fn set_edit_mode(&mut self, ctx: &egui::Context, on: bool) {
         self.edit_mode = on;
-        self.editor_editing = false;
+        self.editor_editing = on;
         self.editor_card_rect = egui::Rect::NOTHING;
         let editor_id = json_editor_id(self.id);
-        ctx.memory_mut(|mem| mem.surrender_focus(editor_id));
+        if on {
+            ctx.memory_mut(|mem| mem.request_focus(editor_id));
+        } else {
+            ctx.memory_mut(|mem| mem.surrender_focus(editor_id));
+        }
     }
 
     /// View mode's right panel: a tree rooted at the node selected on the left,
@@ -2981,8 +2988,13 @@ impl JsonTab {
             } else {
                 0.0
             };
+            let error_bar_h = if self.parse_error.is_some() && !self.input.trim().is_empty() {
+                36.0
+            } else {
+                0.0
+            };
             let available_h = ui.available_height();
-            let sa_h = (available_h - scrollbar_h).max(30.0);
+            let sa_h = (available_h - scrollbar_h - error_bar_h).max(30.0);
 
             let mut vert_sa = egui::ScrollArea::vertical()
                 .id_salt(("editor_vert_scroll", editor_scroll_id))
@@ -3029,6 +3041,25 @@ impl JsonTab {
                         {
                             ui.painter()
                                 .rect_filled(rect, egui::CornerRadius::ZERO, color);
+                        }
+                    }
+                }
+                if let Some(err) = &self.parse_error {
+                    if err.line > 0 && !self.input.trim().is_empty() {
+                        let err_line_idx = err.line - 1;
+                        let font_h = ui.fonts(|f| f.row_height(&font_id));
+                        let top = ui.cursor().top() - ((line_height_val - font_h) * 0.5).max(0.0);
+                        if let Some(row_idx) = self.editor_map.iter().position(|l| l.source_start <= err_line_idx && err_line_idx <= l.source_end) {
+                            let err_rect = egui::Rect::from_min_size(
+                                egui::pos2(card_rect.left() + 4.0, top + row_idx as f32 * line_height_val),
+                                egui::vec2(card_rect.width() - 8.0, line_height_val),
+                            );
+                            let err_bg = if ui.visuals().dark_mode {
+                                egui::Color32::from_rgba_unmultiplied(239, 68, 68, 35)
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(239, 68, 68, 25)
+                            };
+                            ui.painter().rect_filled(err_rect, egui::CornerRadius::same(3), err_bg);
                         }
                     }
                 }
@@ -3113,12 +3144,28 @@ impl JsonTab {
                                 let Some(line) = self.editor_map.get(row) else {
                                     break;
                                 };
-                                let galley = number_galley(ui, line.source_start + 1);
+                                let is_err_line = self.parse_error.as_ref().map_or(false, |e| e.line == line.source_start + 1 && !self.input.trim().is_empty());
+                                let galley = if is_err_line {
+                                    let mut job = egui::text::LayoutJob::single_section(
+                                        format!("{:>width$}", line.source_start + 1, width = digits),
+                                        egui::TextFormat {
+                                            font_id: font_id.clone(),
+                                            color: p.danger,
+                                            line_height: Some(line_height_val),
+                                            ..Default::default()
+                                        },
+                                    );
+                                    job.wrap.max_width = f32::INFINITY;
+                                    ui.painter().layout_job(job)
+                                } else {
+                                    number_galley(ui, line.source_start + 1)
+                                };
                                 let pos = egui::pos2(
                                     rect.right() - galley.size().x,
                                     rect.top() + row as f32 * line_height_val,
                                 );
-                                ui.painter().galley(pos, galley, p.muted);
+                                let color = if is_err_line { p.danger } else { p.muted };
+                                ui.painter().galley(pos, galley, color);
                             }
                         },
                     );
@@ -3330,6 +3377,111 @@ impl JsonTab {
                     );
                 });
             }
+
+            if let Some(err) = &self.parse_error {
+                if !self.input.trim().is_empty() {
+                    ui.add_space(3.0);
+                    let bar_h = 28.0;
+                    let (bar_rect, bar_resp) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), bar_h),
+                        egui::Sense::click(),
+                    );
+
+                    let bar_bg = if ui.visuals().dark_mode {
+                        egui::Color32::from_rgba_unmultiplied(239, 68, 68, 24)
+                    } else {
+                        egui::Color32::from_rgba_unmultiplied(254, 242, 242, 255)
+                    };
+                    let border_stroke = egui::Stroke::new(1.0, p.danger_border);
+                    ui.painter().rect_filled(bar_rect, egui::CornerRadius::same(6), bar_bg);
+                    ui.painter().rect_stroke(bar_rect, egui::CornerRadius::same(6), border_stroke, egui::StrokeKind::Inside);
+
+                    let mut bar_ui = ui.new_child(
+                        egui::UiBuilder::default()
+                            .max_rect(bar_rect.shrink2(egui::vec2(8.0, 2.0)))
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    );
+                    bar_ui.spacing_mut().item_spacing.x = 6.0;
+
+                    bar_ui.label(
+                        egui::RichText::new("⚠")
+                            .size(13.0)
+                            .strong()
+                            .color(p.danger),
+                    );
+
+                    bar_ui.label(
+                        egui::RichText::new(tr(bar_ui.ctx(), "Syntax Error"))
+                            .size(12.0)
+                            .strong()
+                            .color(p.danger),
+                    );
+
+                    let loc_text = format!("Ln {}, Col {}", err.line, err.column);
+                    let pill_resp = bar_ui.add(
+                        egui::Button::new(
+                            egui::RichText::new(loc_text)
+                                .size(11.0)
+                                .monospace()
+                                .color(p.danger),
+                        )
+                        .fill(p.subtle)
+                        .stroke(egui::Stroke::new(1.0, p.danger_border))
+                        .corner_radius(egui::CornerRadius::same(4))
+                    ).on_hover_cursor(egui::CursorIcon::PointingHand)
+                     .on_hover_text(tr(bar_ui.ctx(), "Click to jump to error"));
+
+                    let err_msg = err.message.clone();
+                    let err_line = err.line;
+                    let err_col = err.column;
+
+                    if pill_resp.clicked() || bar_resp.clicked() {
+                        let target_line = err_line.saturating_sub(1);
+                        let mut char_idx = 0;
+                        for (i, line_str) in self.editor_view.lines().enumerate() {
+                            if i == target_line {
+                                let col = err_col.saturating_sub(1);
+                                char_idx += col.min(line_str.chars().count());
+                                break;
+                            }
+                            char_idx += line_str.chars().count() + 1;
+                        }
+                        let editor_id = json_editor_id(self.id);
+                        let mut state = egui::text_edit::TextEditState::load(ui.ctx(), editor_id).unwrap_or_default();
+                        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+                            egui::text::CCursor::new(char_idx),
+                        )));
+                        state.store(ui.ctx(), editor_id);
+                        ui.ctx().memory_mut(|mem| mem.request_focus(editor_id));
+                        self.editor_editing = true;
+
+                        let row_idx = self.editor_map.iter().position(|l| l.source_start <= target_line && target_line <= l.source_end).unwrap_or(target_line);
+                        let target_y = row_idx as f32 * line_height_val;
+                        let desired_scroll_y = (target_y - sa_h * 0.4).max(0.0);
+                        self.editor_sync_scroll = self.editor_scroll_y - desired_scroll_y;
+                        ui.ctx().request_repaint();
+                    }
+
+                    bar_ui.label(
+                        egui::RichText::new(&err_msg)
+                            .size(11.5)
+                            .monospace()
+                            .color(p.strong),
+                    );
+
+                    let snippet_opt = extract_snippet(&self.input, err_line, err_col);
+                    bar_resp.on_hover_ui(|ui| {
+                        ui.set_max_width(450.0);
+                        ui.label(egui::RichText::new(&err_msg).size(12.0).strong().color(p.danger));
+                        if let Some(snippet) = &snippet_opt {
+                            ui.add_space(4.0);
+                            ui.label(egui::RichText::new(snippet).size(11.0).monospace().color(p.text));
+                        }
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(tr(ui.ctx(), "Click to jump to error")).size(11.0).color(p.faint));
+                    });
+                }
+            }
         });
 
         if let Some(loading) = &self.request_loading {
@@ -3404,6 +3556,9 @@ impl JsonTab {
                     self.paste_into_editor(ctx, &json_str);
                 } else {
                     self.replace_document(json_str);
+                    if self.parse_error.is_some() {
+                        self.set_edit_mode(ctx, true);
+                    }
                 }
             }
             Ok(Err(_)) => {
@@ -3414,6 +3569,9 @@ impl JsonTab {
                     self.paste_into_editor(ctx, &raw);
                 } else {
                     self.replace_document(raw);
+                    if self.parse_error.is_some() {
+                        self.set_edit_mode(ctx, true);
+                    }
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -3427,9 +3585,10 @@ impl JsonTab {
 }
 
 impl JsonViewerApp {
-    fn render_tree_syntax_error(&self, ui: &mut egui::Ui, err: &ParseError, colors: ThemeColors) {
+    fn render_tree_syntax_error(&self, ui: &mut egui::Ui, err: &ParseError, colors: ThemeColors) -> bool {
         let p = colors.ui;
         ui.add_space(10.0);
+        let mut switch_clicked = false;
 
         ui.vertical(|ui| {
             ui.set_width(ui.available_width());
@@ -3515,21 +3674,30 @@ impl JsonViewerApp {
 
             ui.add_space(8.0);
 
-            // 4. Subtle Hint Footer
+            // 4. Subtle Hint Footer & Action Button
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(format!(
                         "💡 {}",
                         tr(
                             ui.ctx(),
-                            "Fix the syntax error in the left editor to restore the tree view."
+                            "Fix the syntax error in edit mode to restore the tree view."
                         )
                     ))
                     .size(11.0)
                     .color(p.faint),
                 );
             });
+            ui.add_space(8.0);
+            if ui.button(
+                egui::RichText::new(format!("✏ {}", tr(ui.ctx(), "Switch to Edit Mode")))
+                    .size(12.0)
+                    .color(p.blue),
+            ).clicked() {
+                switch_clicked = true;
+            }
         });
+        switch_clicked
     }
 
     fn render_tree_card(&mut self, ui: &mut egui::Ui, card_rect: egui::Rect, colors: ThemeColors) {
@@ -3545,7 +3713,9 @@ impl JsonViewerApp {
         card_frame.show(ui, |ui| {
             if let Some(err) = &self.parse_error {
                 if !self.input.trim().is_empty() {
-                    self.render_tree_syntax_error(ui, err, colors);
+                    if self.render_tree_syntax_error(ui, err, colors) {
+                        self.set_edit_mode(ui.ctx(), true);
+                    }
                     ui.allocate_space(ui.available_size());
                     return;
                 }

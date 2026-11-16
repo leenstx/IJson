@@ -72,7 +72,7 @@ pub(crate) fn btn_copy(ui: &mut egui::Ui) -> egui::Response {
 }
 
 pub(crate) fn btn_clear(ui: &mut egui::Ui) -> egui::Response {
-    icon_button(ui, LucideIcon::Trash, UiColors::current(ui).danger, "Clear Editor", Some(Action::Clear))
+    icon_button(ui, LucideIcon::MopSparkles, UiColors::current(ui).danger, "Clear Editor", Some(Action::Clear))
 }
 
 pub(crate) fn btn_compare(ui: &mut egui::Ui) -> egui::Response {
