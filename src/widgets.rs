@@ -193,7 +193,8 @@ pub(crate) fn show_tree_context_menu(resp: &egui::Response, value: &Value, path:
         }
         if is_container {
             if menu_item(ui, "Copy JSON", LucideIcon::Braces, false) {
-                let json_str = serde_json::to_string_pretty(value).unwrap_or_default();
+                let indent = crate::model::Indentation::current(ui.ctx());
+                let json_str = crate::model::to_pretty_json(value, indent).unwrap_or_default();
                 *action = Some(TreeAction::CopyText(json_str));
                 ui.close_menu();
             }

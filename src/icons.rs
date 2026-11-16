@@ -46,6 +46,7 @@ pub(crate) enum LucideIcon {
     Languages,
     Command,
     MopSparkles,
+    SlidersHorizontal,
 }
 
 #[derive(Clone, Copy)]
@@ -57,6 +58,17 @@ pub(crate) enum LucideElem {
 
 fn icon_elements(icon: LucideIcon) -> &'static [LucideElem] {
     match icon {
+        LucideIcon::SlidersHorizontal => &[
+            LucideElem::Path("M10 5H3"),
+            LucideElem::Path("M12 19H3"),
+            LucideElem::Path("M14 3v4"),
+            LucideElem::Path("M16 17v4"),
+            LucideElem::Path("M21 12h-9"),
+            LucideElem::Path("M21 19h-5"),
+            LucideElem::Path("M21 5h-7"),
+            LucideElem::Path("M8 10v4"),
+            LucideElem::Path("M8 12H3"),
+        ],
         LucideIcon::MopSparkles => &[
             LucideElem::Path("M10 22a3 3 0 0 1 -3 -3"),
             LucideElem::Path("M10 22c2.761 0 5 -1.79 5 -4c-4.42 0 -4.08 -5 -8.5 -5a4.501 4.501 0 0 0 0 9z"),

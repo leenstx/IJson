@@ -7,8 +7,8 @@ use crate::fold::{apply_view_edit, build_view, shift_folds, FoldSpan, ViewCommit
 use crate::model::{
     collapse_beyond_depth, collect_all_expandable_paths, delete_value_at_path,
     is_minimal_json_value, is_request_candidate, search_recursive, simplify_json_value,
-    sort_json_value, to_minimal_json_value, try_request_json, try_unescape_json,
-    update_value_at_path, EditModalState, ParseError, SortMode, ValueTypeTag,
+    sort_json_value, to_minimal_json_value, to_pretty_json, try_request_json, try_unescape_json,
+    update_value_at_path, EditModalState, Indentation, ParseError, SortMode, ValueTypeTag,
 };
 
 pub(crate) const TAB_RAIL_WIDTH: f32 = 200.0;
@@ -95,6 +95,7 @@ pub(crate) struct JsonTab {
     pub(crate) editor_galley_cache: Option<EditorGalleyCache>,
     /// Edit mode shows only the text editor; View mode shows the tree and the selected node.
     pub(crate) edit_mode: bool,
+    pub(crate) indentation: Indentation,
     /// Right-hand tree in View mode: its own fold state and highlighted row.
     pub(crate) node_collapsed: HashSet<String>,
     pub(crate) node_selected_path: Option<String>,
@@ -160,6 +161,7 @@ impl JsonTab {
             editor_fold_starts: HashSet::new(),
             editor_galley_cache: None,
             edit_mode: false,
+            indentation: Indentation::default(),
             node_collapsed: HashSet::new(),
             node_selected_path: None,
             node_scroll_x: 0.0,
@@ -291,7 +293,7 @@ impl JsonTab {
         };
 
         if let Some((v, unescaped)) = parsed {
-            if let Ok(pretty) = serde_json::to_string_pretty(&v) {
+            if let Ok(pretty) = to_pretty_json(&v, self.indentation) {
                 text = pretty;
             } else {
                 text = unescaped;
@@ -427,6 +429,7 @@ impl JsonTab {
         if self.input.trim().is_empty() {
             return;
         }
+        self.indentation = Indentation::current(ctx);
         self.remember_before_edit(false);
         if self.parsed.is_none() {
             if let Some((_, unescaped)) = try_unescape_json(&self.input) {
@@ -444,9 +447,36 @@ impl JsonTab {
         self.note_edit_applied();
     }
 
+    pub(crate) fn set_indentation(&mut self, indent: Indentation) {
+        if self.indentation == indent {
+            return;
+        }
+        self.indentation = indent;
+        self.tree_content_width = 0.0;
+        self.editor_content_width = 0.0;
+        let parsed = self
+            .parsed
+            .clone()
+            .or_else(|| serde_json::from_str::<Value>(&self.input).ok());
+        if let Some(v) = parsed {
+            if let Ok(formatted) = to_pretty_json(&v, self.indentation) {
+                if formatted != self.input {
+                    self.editor_folds.clear();
+                    self.input = formatted;
+                    self.parse_input(false);
+                    self.note_source_input();
+                    self.dirty = true;
+                }
+            }
+        }
+        if let Some(comp) = &mut self.comparison {
+            comp.right.set_indentation(indent);
+        }
+    }
+
     fn format_current(&mut self) {
         if let Some(v) = &self.parsed {
-            if let Ok(formatted) = serde_json::to_string_pretty(v) {
+            if let Ok(formatted) = to_pretty_json(v, self.indentation) {
                 if formatted != self.input {
                     self.editor_folds.clear();
                     self.input = formatted;
@@ -478,7 +508,7 @@ impl JsonTab {
         } else {
             to_minimal_json_value(value)
         };
-        if let Ok(text) = serde_json::to_string_pretty(&target) {
+        if let Ok(text) = to_pretty_json(&target, self.indentation) {
             if text != self.input {
                 // Reuse document replacement so extraction is a single undoable edit.
                 self.replace_document(text);
@@ -505,10 +535,10 @@ impl JsonTab {
         self.applying_sort = true;
         self.editor_folds.clear();
         self.input = if self.sort_mode == SortMode::None {
-            serde_json::to_string_pretty(&v).unwrap_or(source)
+            to_pretty_json(&v, self.indentation).unwrap_or(source)
         } else {
             let sorted = sort_json_value(&v, self.sort_mode);
-            serde_json::to_string_pretty(&sorted).unwrap_or_default()
+            to_pretty_json(&sorted, self.indentation).unwrap_or_default()
         };
         // Rewrite the editor, but keep the tree's current expand/collapse set.
         // Paths are keyed by name, so reordering keys does not change which nodes are open.
@@ -713,7 +743,7 @@ impl JsonTab {
                     if update_value_at_path(&mut root, &path, new_val) {
                         self.remember_before_edit(false);
                         self.editor_folds.clear();
-                        self.input = serde_json::to_string_pretty(&root).unwrap_or_default();
+                        self.input = to_pretty_json(&root, self.indentation).unwrap_or_default();
                         self.parsed = Some(root);
                         self.revision = self.revision.wrapping_add(1);
                         self.note_source_input();
@@ -743,7 +773,7 @@ impl JsonTab {
             if delete_value_at_path(&mut root, path) {
                 self.remember_before_edit(false);
                 self.editor_folds.clear();
-                self.input = serde_json::to_string_pretty(&root).unwrap_or_default();
+                self.input = to_pretty_json(&root, self.indentation).unwrap_or_default();
                 self.parsed = Some(root);
                 self.revision = self.revision.wrapping_add(1);
                 self.note_source_input();
@@ -836,6 +866,7 @@ impl JsonTab {
             "auto_name": self.auto_name,
             "pinned": self.pinned,
             "edit_mode": self.edit_mode,
+            "indentation": self.indentation.spaces(),
             "input": self.input,
             "source_input": self.source_input,
             "collapsed": collapsed,
@@ -876,6 +907,9 @@ pub(crate) fn tab_from_value(v: &Value, fallback_id: u64) -> Option<LoadedTab> {
     tab.auto_name = auto_name;
     tab.pinned = v.get("pinned").and_then(|x| x.as_bool()).unwrap_or(false);
     tab.edit_mode = v.get("edit_mode").and_then(|x| x.as_bool()).unwrap_or(false);
+    if let Some(n) = v.get("indentation").and_then(|x| x.as_u64()) {
+        tab.indentation = Indentation::from_spaces(n as usize);
+    }
     tab.input = input;
     if let Some(lines) = v.get("editor_folds").and_then(|x| x.as_array()) {
         tab.editor_folds = lines

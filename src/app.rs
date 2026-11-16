@@ -13,7 +13,7 @@ use crate::highlight::highlight_json;
 use crate::icons::{draw_lucide_icon, LucideIcon};
 use crate::model::{
     collect_all_expandable_paths, is_request_candidate, value_at_path, try_request_json, try_unescape_json,
-    ParseError, SortMode, TreeAction, ValueTypeTag,
+    Indentation, ParseError, SortMode, TreeAction, ValueTypeTag,
 };
 use crate::tab::{
     local_stamp_now, stamp_from_system_time, tab_from_value, unique_tab_name, EditorGalleyCache, JsonTab,
@@ -29,6 +29,14 @@ use crate::widgets::{
     menu_separator, modal_button, type_chip,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum SettingsTab {
+    #[default]
+    General,
+    Font,
+    Shortcuts,
+}
+
 pub(crate) struct JsonViewerApp {
     tabs: Vec<JsonTab>,
     active: usize,
@@ -41,8 +49,9 @@ pub(crate) struct JsonViewerApp {
     tab_rail_width: f32,
     sidebar_hidden: bool,
     keymap: Keymap,
-    /// Keyboard shortcut settings panel.
-    keymap_open: bool,
+    /// Settings panel state.
+    settings_open: bool,
+    settings_tab: SettingsTab,
     /// The action whose new shortcut is being recorded.
     keymap_recording: Option<Action>,
     /// Message after a rebind took a shortcut from another action.
@@ -54,6 +63,7 @@ pub(crate) struct JsonViewerApp {
     split_customized: bool,
     language: Language,
     theme_mode: ThemeMode,
+    indentation: Indentation,
     fonts: AppFonts,
 
     cache_dirty: bool,
@@ -92,7 +102,8 @@ impl JsonViewerApp {
             tab_rail_width: TAB_RAIL_WIDTH,
             sidebar_hidden: false,
             keymap: Keymap::default(),
-            keymap_open: false,
+            settings_open: false,
+            settings_tab: SettingsTab::default(),
             keymap_recording: None,
             keymap_note: None,
             node_focused: false,
@@ -100,6 +111,7 @@ impl JsonViewerApp {
             split_customized: false,
             language: Language::English,
             theme_mode: ThemeMode::Light,
+            indentation: Indentation::default(),
             fonts: AppFonts::new(ctx),
             cache_dirty: false,
             last_cache_save: None,
@@ -112,6 +124,7 @@ impl JsonViewerApp {
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
         app.language.apply(ctx);
         app.theme_mode.apply(ctx);
+        app.indentation.apply(ctx);
         let font_choice = app.fonts.selected;
         if font_choice != 0 && !app.fonts.apply(ctx, font_choice) {
             app.fonts.selected = 0;
@@ -155,6 +168,12 @@ impl JsonViewerApp {
         }
         if let Some(code) = v.get("font_choice").and_then(Value::as_str) {
             self.fonts.restore(code);
+        }
+        if let Some(n) = v.get("indentation").and_then(Value::as_u64) {
+            self.indentation = Indentation::from_spaces(n as usize);
+            for tab in &mut self.tabs {
+                tab.indentation = self.indentation;
+            }
         }
         if let Some(width) = v.get("tab_rail_width").and_then(Value::as_f64) {
             if width.is_finite() {
@@ -232,15 +251,19 @@ impl JsonViewerApp {
             .into_iter()
             .map(|mut item| {
                 max_id = max_id.max(item.tab.id);
-                if let Some(comparison) = &item.tab.comparison {
+                if let Some(comparison) = &mut item.tab.comparison {
                     max_id = max_id.max(comparison.right.id);
+                    comparison.right.indentation = self.indentation;
                 }
+                item.tab.indentation = self.indentation;
                 item.tab.finish_load(item.collapsed, item.search_index);
                 item.tab
             })
             .collect();
         if self.tabs.is_empty() {
-            self.tabs.push(JsonTab::empty(1, local_stamp_now()));
+            let mut tab = JsonTab::empty(1, local_stamp_now());
+            tab.indentation = self.indentation;
+            self.tabs.push(tab);
             max_id = max_id.max(1);
         }
         self.next_id = max_id.saturating_add(1).max(self.next_id);
@@ -284,6 +307,7 @@ impl JsonViewerApp {
             "split_customized": self.split_customized,
             "language": self.language.code(),
             "theme_mode": self.theme_mode.code(),
+            "indentation": self.indentation.spaces(),
             "font_choice": self.fonts.available[self.fonts.selected].key,
         });
         if let Some(win) = &self.window_geom {
@@ -778,7 +802,7 @@ impl JsonViewerApp {
         self.render_split_handle(ui, cards_rect);
     }
 
-    /// Theme, language and font controls shown in the sidebar footer.
+    /// Theme toggle (left) and Settings button (right) shown in the sidebar footer.
     fn render_settings(&mut self, controls_ui: &mut egui::Ui, p: UiColors) {
         // 1. Theme toggle button (left edge)
         let theme_icon = self.theme_mode.icon();
@@ -798,7 +822,7 @@ impl JsonViewerApp {
         resp.on_hover_text(tr(controls_ui.ctx(), theme_tip))
             .on_hover_cursor(egui::CursorIcon::PointingHand);
 
-        // Language and font sit at the right edge of the footer.
+        // 2. Settings button (bottom-right edge)
         let mut right_ui = controls_ui.new_child(
             egui::UiBuilder::default()
                 .max_rect(controls_ui.max_rect())
@@ -807,191 +831,34 @@ impl JsonViewerApp {
         right_ui.spacing_mut().item_spacing = controls_ui.spacing().item_spacing;
         let controls_ui = &mut right_ui;
 
-        // 2. Language toggle button (rightmost)
-        let lang_tip = match self.language {
-            Language::English => "Language: English · click for 中文",
-            Language::Chinese => "语言：中文 · 点击切换为 English",
-        };
         let (btn_rect, resp) = controls_ui.allocate_exact_size(egui::vec2(24.0, 22.0), egui::Sense::click());
-        if resp.hovered() {
+        if resp.hovered() || self.settings_open {
             controls_ui.painter().rect_filled(btn_rect, egui::CornerRadius::same(4), p.hover);
         }
-        let color = if resp.hovered() { p.strong } else { p.muted };
+        let color = if resp.hovered() || self.settings_open { p.strong } else { p.muted };
         draw_lucide_icon(
             controls_ui.painter(),
             egui::Rect::from_center_size(btn_rect.center(), egui::vec2(15.0, 15.0)),
-            LucideIcon::Languages,
+            LucideIcon::SlidersHorizontal,
             color,
         );
         if resp.clicked() {
-            self.language = self.language.toggle();
-            self.language.apply(controls_ui.ctx());
-            self.cache_dirty = true;
-        }
-        resp.on_hover_text(lang_tip)
-            .on_hover_cursor(egui::CursorIcon::PointingHand);
-
-        // 3. Global font picker (left of language), transparent when idle.
-        let popup_id = controls_ui.id().with("font_picker");
-        let was_open = controls_ui.memory(|mem| mem.is_popup_open(popup_id));
-        let (btn_rect, resp) = controls_ui.allocate_exact_size(
-            egui::vec2(24.0, 22.0),
-            egui::Sense::click(),
-        );
-        if resp.clicked() {
-            controls_ui.memory_mut(|mem| mem.toggle_popup(popup_id));
-            if !was_open {
-                self.fonts.search.clear();
-            }
-        }
-        let open = controls_ui.memory(|mem| mem.is_popup_open(popup_id));
-        if resp.hovered() || open {
-            controls_ui.painter().rect_filled(
-                btn_rect,
-                egui::CornerRadius::same(4),
-                p.hover,
-            );
-        }
-        draw_lucide_icon(
-            controls_ui.painter(),
-            egui::Rect::from_center_size(btn_rect.center(), egui::vec2(15.0, 15.0)),
-            LucideIcon::Type,
-            if resp.hovered() || open { p.strong } else { p.muted },
-        );
-        let mut picked = None;
-        egui::popup::popup_above_or_below_widget(
-            &controls_ui,
-            popup_id,
-            &resp,
-            egui::AboveOrBelow::Above,
-            egui::PopupCloseBehavior::CloseOnClickOutside,
-            |ui| {
-                ui.set_width(300.0);
-                ui.label(
-                    egui::RichText::new(tr(ui.ctx(), "Global font"))
-                        .small()
-                        .color(p.muted),
-                );
-                let search = ui.add(
-                    egui::TextEdit::singleline(&mut self.fonts.search)
-                        .hint_text(tr(ui.ctx(), "Search fonts…"))
-                        .desired_width(f32::INFINITY),
-                );
-                if resp.clicked() && !was_open {
-                    search.request_focus();
-                }
-                let query = self.fonts.search.trim().to_lowercase();
-                let mut filtered: Vec<usize> = self
-                    .fonts
-                    .available
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, choice)| choice.search_name.contains(&query))
-                    .map(|(index, _)| index)
-                    .collect();
-                if let Some(position) = filtered
-                    .iter()
-                    .position(|&index| index == self.fonts.selected)
-                {
-                    filtered[..=position].rotate_right(1);
-                }
-                let row_h = ui.spacing().interact_size.y.max(
-                    ui.text_style_height(&egui::TextStyle::Button)
-                        + 2.0 * ui.spacing().button_padding.y,
-                );
-                let list_h = (ui.ctx().screen_rect().height() - 160.0).clamp(80.0, 320.0);
-                // Virtualize the system font list; only visible rows are laid out.
-                let mut list = egui::ScrollArea::vertical()
-                    .id_salt("system_font_list")
-                    .max_height(list_h)
-                    .auto_shrink([false, true]);
-                if (resp.clicked() && !was_open) || search.changed() {
-                    list = list.vertical_scroll_offset(0.0);
-                }
-                list.show_rows(ui, row_h, filtered.len(), |ui, rows| {
-                    ui.with_layout(
-                        egui::Layout::top_down_justified(egui::Align::Min),
-                        |ui| {
-                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                            for row in rows {
-                                let index = filtered[row];
-                                let choice = &self.fonts.available[index];
-                                if ui
-                                    .add(egui::SelectableLabel::new(
-                                        self.fonts.selected == index,
-                                        tr(ui.ctx(), &choice.label),
-                                    ))
-                                    .on_hover_text(&choice.label)
-                                    .clicked()
-                                {
-                                    picked = Some(index);
-                                }
-                            }
-                        },
-                    );
-                });
-                if filtered.is_empty() {
-                    ui.label(tr(ui.ctx(), "No matching fonts"));
-                }
-                ui.separator();
-                ui.label(tr(ui.ctx(), "Preview: Aa 0123 中文"));
-                if let Some(error) = &self.fonts.error {
-                    ui.colored_label(p.danger, tr(ui.ctx(), "Unable to load font"));
-                    ui.label(egui::RichText::new(error).small().color(p.muted));
-                }
-            },
-        );
-        if let Some(index) = picked {
-            if index == self.fonts.selected {
-                controls_ui.memory_mut(|mem| mem.close_popup());
-            } else if self.fonts.apply(controls_ui.ctx(), index) {
-                // Re-measure cached content widths without changing documents.
-                for tab in &mut self.tabs {
-                    tab.editor_content_width = 0.0;
-                    tab.tree_content_width = 0.0;
-                    if let Some(comparison) = &mut tab.comparison {
-                        comparison.right.editor_content_width = 0.0;
-                        comparison.right.tree_content_width = 0.0;
-                    }
-                }
-                self.cache_dirty = true;
-                controls_ui.memory_mut(|mem| mem.close_popup());
-            }
-        }
-        resp.on_hover_text(format!(
-            "{}: {}",
-            tr(controls_ui.ctx(), "Global font"),
-            tr(controls_ui.ctx(), &self.fonts.available[self.fonts.selected].label),
-        ))
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-
-        // 4. Keyboard shortcuts (left of font).
-        let (btn_rect, resp) = controls_ui.allocate_exact_size(egui::vec2(24.0, 22.0), egui::Sense::click());
-        if resp.hovered() || self.keymap_open {
-            controls_ui.painter().rect_filled(btn_rect, egui::CornerRadius::same(4), p.hover);
-        }
-        draw_lucide_icon(
-            controls_ui.painter(),
-            egui::Rect::from_center_size(btn_rect.center(), egui::vec2(14.0, 14.0)),
-            LucideIcon::Command,
-            if resp.hovered() || self.keymap_open { p.strong } else { p.muted },
-        );
-        if resp.clicked() {
-            self.keymap_open = true;
+            self.settings_open = !self.settings_open;
             self.keymap_recording = None;
             self.keymap_note = None;
-            // Keys pressed while the panel is open must not reach the editor or search box.
-            controls_ui.memory_mut(|m| {
-                if let Some(id) = m.focused() {
-                    m.surrender_focus(id);
-                }
-            });
+            if self.settings_open {
+                controls_ui.memory_mut(|m| {
+                    if let Some(id) = m.focused() {
+                        m.surrender_focus(id);
+                    }
+                });
+            }
         }
-        resp.on_hover_text(tr(controls_ui.ctx(), "Keyboard shortcuts"))
+        resp.on_hover_text(tr(controls_ui.ctx(), "Settings"))
             .on_hover_cursor(egui::CursorIcon::PointingHand);
     }
 
-    /// While the shortcut panel is open: records the next key press for the selected row
+    /// While the settings panel is open: records the next key press for the selected row
     /// (or closes the panel on Esc). Runs before other handlers so they never see the keys.
     fn capture_keymap_keys(&mut self, ctx: &egui::Context) {
         // Read the next key press for the row being recorded, before anything else sees it.
@@ -1019,14 +886,409 @@ impl JsonViewerApp {
                 None => {}
             }
         } else if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            self.keymap_open = false;
+            self.settings_open = false;
+            self.keymap_recording = None;
+            self.keymap_note = None;
         }
-
     }
 
-    /// Keyboard shortcut settings: one row per action; click a shortcut, then press keys.
-    fn render_keymap_panel(&mut self, ctx: &egui::Context) {
-        if !self.keymap_open {
+    /// Settings General tab: Language and JSON Indentation.
+    fn render_settings_general(&mut self, ui: &mut egui::Ui, p: &UiColors, dark: bool, card_h: f32) {
+        let group = egui::Frame::default()
+            .fill(p.surface)
+            .stroke(egui::Stroke::new(
+                0.5,
+                if dark {
+                    egui::Color32::from_white_alpha(28)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(15, 23, 42, 30)
+                },
+            ))
+            .corner_radius(egui::CornerRadius::same(10))
+            .shadow(egui::epaint::Shadow {
+                offset: [0, 1],
+                blur: 6,
+                spread: 0,
+                color: egui::Color32::from_black_alpha(if dark { 60 } else { 10 }),
+            })
+            .inner_margin(egui::Margin::symmetric(16, 14));
+
+        group.show(ui, |ui| {
+            ui.set_min_height(card_h - 28.0);
+
+            // 1. Language setting
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new(tr(ui.ctx(), "Language"))
+                            .size(13.0)
+                            .strong()
+                            .color(p.strong),
+                    );
+                    ui.label(
+                        egui::RichText::new(tr(ui.ctx(), "Interface language"))
+                            .size(11.5)
+                            .color(p.muted),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let cur_idx = if self.language == Language::English { 0 } else { 1 };
+                    if let Some(idx) = segmented(ui, &["English", "中文"], cur_idx) {
+                        let new_lang = if idx == 0 { Language::English } else { Language::Chinese };
+                        if new_lang != self.language {
+                            self.language = new_lang;
+                            self.language.apply(ui.ctx());
+                            self.cache_dirty = true;
+                        }
+                    }
+                });
+            });
+
+            ui.add_space(14.0);
+            ui.painter().hline(
+                ui.available_rect_before_wrap().x_range(),
+                ui.cursor().top(),
+                egui::Stroke::new(1.0, p.border.gamma_multiply(0.6)),
+            );
+            ui.add_space(14.0);
+
+            // 2. JSON Indentation setting
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new(tr(ui.ctx(), "JSON Indentation"))
+                        .size(13.0)
+                        .strong()
+                        .color(p.strong),
+                );
+                ui.label(
+                    egui::RichText::new(tr(
+                        ui.ctx(),
+                        "Number of spaces used for indentation when formatting",
+                    ))
+                    .size(11.5)
+                    .color(p.muted),
+                );
+            });
+            ui.add_space(12.0);
+
+            // Pills for 2, 4, 6, 8
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
+                for &indent in &Indentation::ALL {
+                    let spaces = indent.spaces();
+                    let is_sel = self.indentation == indent;
+                    let text = if spaces == 2 {
+                        format!("2 ({})", tr(ui.ctx(), "Default"))
+                    } else {
+                        format!("{}", spaces)
+                    };
+                    let font = egui::FontId::proportional(12.0);
+                    let galley = ui.painter().layout_no_wrap(text.clone(), font.clone(), p.text);
+                    let (rect, resp) = ui.allocate_exact_size(
+                        egui::vec2(galley.size().x + 16.0, 26.0),
+                        egui::Sense::click(),
+                    );
+                    let (bg, fg) = if is_sel {
+                        (p.primary, egui::Color32::WHITE)
+                    } else if resp.hovered() {
+                        (p.hover, p.strong)
+                    } else {
+                        (p.subtle, p.text)
+                    };
+                    ui.painter().rect_filled(rect, egui::CornerRadius::same(6), bg);
+                    if !is_sel {
+                        ui.painter().rect_stroke(
+                            rect,
+                            egui::CornerRadius::same(6),
+                            egui::Stroke::new(1.0, p.border),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, font, fg);
+                    if resp.clicked() && !is_sel {
+                        self.indentation = indent;
+                        self.indentation.apply(ui.ctx());
+                        for tab in &mut self.tabs {
+                            tab.set_indentation(indent);
+                        }
+                        self.cache_dirty = true;
+                    }
+                    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(format!("{} {}", spaces, tr(ui.ctx(), "spaces")));
+                }
+            });
+        });
+    }
+
+    /// Settings Font tab: Search and choose global application font.
+    fn render_settings_font(&mut self, ui: &mut egui::Ui, p: &UiColors, dark: bool, card_h: f32) {
+        let group = egui::Frame::default()
+            .fill(p.surface)
+            .stroke(egui::Stroke::new(
+                0.5,
+                if dark {
+                    egui::Color32::from_white_alpha(28)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(15, 23, 42, 30)
+                },
+            ))
+            .corner_radius(egui::CornerRadius::same(10))
+            .shadow(egui::epaint::Shadow {
+                offset: [0, 1],
+                blur: 6,
+                spread: 0,
+                color: egui::Color32::from_black_alpha(if dark { 60 } else { 10 }),
+            })
+            .inner_margin(egui::Margin::symmetric(16, 14));
+
+        group.show(ui, |ui| {
+            ui.set_min_height(card_h - 28.0);
+
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(tr(ui.ctx(), "Global font"))
+                        .size(13.0)
+                        .strong()
+                        .color(p.strong),
+                );
+                ui.label(
+                    egui::RichText::new(format!("({})", tr(ui.ctx(), &self.fonts.available[self.fonts.selected].label)))
+                        .size(12.0)
+                        .color(p.muted),
+                );
+            });
+            ui.add_space(8.0);
+
+            let search = ui.add(
+                egui::TextEdit::singleline(&mut self.fonts.search)
+                    .hint_text(tr(ui.ctx(), "Search fonts…"))
+                    .desired_width(f32::INFINITY),
+            );
+            ui.add_space(6.0);
+
+            let query = self.fonts.search.trim().to_lowercase();
+            let mut filtered: Vec<usize> = self
+                .fonts
+                .available
+                .iter()
+                .enumerate()
+                .filter(|(_, choice)| choice.search_name.contains(&query))
+                .map(|(index, _)| index)
+                .collect();
+            if let Some(position) = filtered
+                .iter()
+                .position(|&index| index == self.fonts.selected)
+            {
+                filtered[..=position].rotate_right(1);
+            }
+            let row_h = ui.spacing().interact_size.y.max(
+                ui.text_style_height(&egui::TextStyle::Button)
+                    + 2.0 * ui.spacing().button_padding.y,
+            );
+            let list_h = 200.0;
+            let mut picked = None;
+            let mut list = egui::ScrollArea::vertical()
+                .id_salt("settings_font_list")
+                .max_height(list_h)
+                .min_scrolled_height(list_h)
+                .auto_shrink([false, false]);
+            if search.changed() {
+                list = list.vertical_scroll_offset(0.0);
+            }
+            list.show_rows(ui, row_h, filtered.len(), |ui, rows| {
+                ui.with_layout(
+                    egui::Layout::top_down_justified(egui::Align::Min),
+                    |ui| {
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                        for row in rows {
+                            let index = filtered[row];
+                            let choice = &self.fonts.available[index];
+                            if ui
+                                .add(egui::SelectableLabel::new(
+                                    self.fonts.selected == index,
+                                    tr(ui.ctx(), &choice.label),
+                                ))
+                                .on_hover_text(&choice.label)
+                                .clicked()
+                            {
+                                picked = Some(index);
+                            }
+                        }
+                    },
+                );
+            });
+            if filtered.is_empty() {
+                ui.label(tr(ui.ctx(), "No matching fonts"));
+            }
+            if let Some(index) = picked {
+                if self.fonts.apply(ui.ctx(), index) {
+                    for tab in &mut self.tabs {
+                        tab.editor_content_width = 0.0;
+                        tab.tree_content_width = 0.0;
+                        if let Some(comparison) = &mut tab.comparison {
+                            comparison.right.editor_content_width = 0.0;
+                            comparison.right.tree_content_width = 0.0;
+                        }
+                    }
+                    self.cache_dirty = true;
+                }
+            }
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(tr(ui.ctx(), "Preview: Aa 0123 中文"))
+                    .size(12.0)
+                    .color(p.muted),
+            );
+            if let Some(error) = &self.fonts.error {
+                ui.colored_label(p.danger, tr(ui.ctx(), "Unable to load font"));
+                ui.label(egui::RichText::new(error).small().color(p.muted));
+            }
+        });
+    }
+
+    /// Settings Shortcuts tab: Keyboard shortcuts remapping.
+    fn render_settings_shortcuts(&mut self, ui: &mut egui::Ui, p: &UiColors, dark: bool, card_h: f32) {
+        let group = egui::Frame::default()
+            .fill(p.surface)
+            .stroke(egui::Stroke::new(
+                0.5,
+                if dark {
+                    egui::Color32::from_white_alpha(28)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(15, 23, 42, 30)
+                },
+            ))
+            .corner_radius(egui::CornerRadius::same(10))
+            .shadow(egui::epaint::Shadow {
+                offset: [0, 1],
+                blur: 6,
+                spread: 0,
+                color: egui::Color32::from_black_alpha(if dark { 60 } else { 10 }),
+            })
+            .inner_margin(egui::Margin::symmetric(16, 14));
+
+        group.show(ui, |ui| {
+            ui.set_min_height(card_h - 28.0);
+
+            let row_h = 34.0;
+            let list_h = 238.0;
+            egui::ScrollArea::vertical()
+                .id_salt("settings_keymap_list")
+                .max_height(list_h)
+                .min_scrolled_height(list_h)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    for (i, action) in Action::ALL.iter().copied().enumerate() {
+                        let row_w = ui.available_width();
+                        let (row, row_resp) =
+                            ui.allocate_exact_size(egui::vec2(row_w, row_h), egui::Sense::click());
+                        let hovered = row_resp.hovered();
+                        let recording = self.keymap_recording == Some(action);
+
+                        if hovered {
+                            ui.painter().rect_filled(
+                                row.shrink2(egui::vec2(2.0, 1.0)),
+                                egui::CornerRadius::same(6),
+                                p.hover,
+                            );
+                        }
+
+                        let left = row.left() + 4.0;
+                        let right = row.right() - 8.0;
+
+                        if i > 0 && !hovered {
+                            ui.painter().hline(
+                                egui::Rangef::new(left, right),
+                                row.top(),
+                                egui::Stroke::new(1.0, p.border.gamma_multiply(0.6)),
+                            );
+                        }
+                        ui.painter().text(
+                            egui::pos2(left, row.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            tr(ui.ctx(), action.label()),
+                            egui::FontId::proportional(13.0),
+                            if hovered { p.strong } else { p.text },
+                        );
+
+                        let cy = row.center().y;
+                        if recording {
+                            let text = tr(ui.ctx(), "Press keys…");
+                            let font = egui::FontId::proportional(12.0);
+                            let w = ui.painter().layout_no_wrap(text.to_owned(), font.clone(), p.blue).size().x + 20.0;
+                            let field = egui::Rect::from_min_max(egui::pos2(right - w, cy - 12.0), egui::pos2(right, cy + 12.0));
+                            ui.painter().rect(
+                                field,
+                                egui::CornerRadius::same(6),
+                                p.surface,
+                                egui::Stroke::new(1.5, p.blue),
+                                egui::StrokeKind::Inside,
+                            );
+                            ui.painter().text(field.center(), egui::Align2::CENTER_CENTER, text, font, p.blue);
+                        } else if let Some(sc) = self.keymap.get(action) {
+                            let font = egui::FontId::proportional(12.0);
+                            let mut x = right;
+                            for key in sc.keys().iter().rev() {
+                                let galley = ui.painter().layout_no_wrap(key.clone(), font.clone(), p.text);
+                                let w = (galley.size().x + 10.0).max(22.0);
+                                let cap = egui::Rect::from_min_max(egui::pos2(x - w, cy - 11.0), egui::pos2(x, cy + 11.0));
+                                ui.painter().rect_filled(
+                                    cap.translate(egui::vec2(0.0, 1.0)),
+                                    egui::CornerRadius::same(5),
+                                    p.border,
+                                );
+                                ui.painter().rect(
+                                    cap,
+                                    egui::CornerRadius::same(5),
+                                    p.subtle,
+                                    egui::Stroke::new(1.0, if hovered { p.pressed } else { p.border }),
+                                    egui::StrokeKind::Inside,
+                                );
+                                ui.painter().galley(
+                                    cap.center() - galley.size() * 0.5,
+                                    galley,
+                                    if hovered { p.strong } else { p.text },
+                                );
+                                x -= w + 4.0;
+                            }
+                        } else {
+                            ui.painter().text(
+                                egui::pos2(right, cy),
+                                egui::Align2::RIGHT_CENTER,
+                                tr(ui.ctx(), "Not set"),
+                                egui::FontId::proportional(12.0),
+                                if hovered { p.muted } else { p.faint },
+                            );
+                        }
+
+                        if row_resp.clicked() {
+                            self.keymap_recording = if recording { None } else { Some(action) };
+                            self.keymap_note = None;
+                        }
+                        row_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                    }
+                });
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+            if let Some(note) = &self.keymap_note {
+                ui.label(egui::RichText::new(note).size(11.5).color(p.amber));
+                ui.add_space(2.0);
+            }
+            ui.label(
+                egui::RichText::new(tr(ui.ctx(), "Click a row, then press the new keys. Delete clears, Esc cancels."))
+                    .size(11.5)
+                    .color(p.muted),
+            );
+        });
+    }
+
+    /// Unified settings panel: General, Font, Shortcuts tabs.
+    fn render_settings_panel(&mut self, ctx: &egui::Context) {
+        if !self.settings_open {
             return;
         }
         let p = UiColors::from_ctx(ctx);
@@ -1034,7 +1296,7 @@ impl JsonViewerApp {
         let screen = ctx.screen_rect();
         let mut close = false;
 
-        egui::Area::new(egui::Id::new("keymap_backdrop"))
+        egui::Area::new(egui::Id::new("settings_backdrop"))
             .order(egui::Order::Middle)
             .fixed_pos(screen.min)
             .interactable(true)
@@ -1051,18 +1313,15 @@ impl JsonViewerApp {
             });
 
         let width = 520.0;
-        let row_h = 38.0;
-        let list_h = (screen.height() - 220.0)
-            .clamp(160.0, row_h * Action::ALL.len() as f32 + 2.0);
-        egui::Window::new("keymap_panel")
+        let card_h = 320.0;
+        let window_height = 474.0;
+        egui::Window::new("settings_panel")
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
             .movable(true)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -8.0))
-            .default_width(width)
-            // Same backdrop as the main window: soft gray with the window glow,
-            // and the list as a white card on top.
+            .fixed_size(egui::vec2(width, window_height))
             .frame(
                 egui::Frame::window(&ctx.style())
                     .fill(if dark { p.canvas } else { egui::Color32::from_rgb(243, 243, 245) })
@@ -1070,8 +1329,7 @@ impl JsonViewerApp {
             )
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                // Last frame's window rect; the glow goes under this frame's content.
-                if let Some(rect) = ui.ctx().memory(|m| m.area_rect(egui::Id::new("keymap_panel"))) {
+                if let Some(rect) = ui.ctx().memory(|m| m.area_rect(egui::Id::new("settings_panel"))) {
                     paint_glow_rect(
                         ui.ctx(),
                         ui.painter(),
@@ -1086,8 +1344,8 @@ impl JsonViewerApp {
                 // Header: title and close.
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(tr(ui.ctx(), "Keyboard Shortcuts"))
-                            .size(14.5)
+                        egui::RichText::new(tr(ui.ctx(), "Settings"))
+                            .size(15.0)
                             .strong()
                             .color(p.strong),
                     );
@@ -1109,130 +1367,39 @@ impl JsonViewerApp {
                 });
                 ui.add_space(12.0);
 
-                // Grouped list, like a macOS Settings section.
-                let group = egui::Frame::default()
-                    .fill(p.surface)
-                    .stroke(egui::Stroke::new(
-                        0.5,
-                        if dark {
-                            egui::Color32::from_white_alpha(28)
-                        } else {
-                            egui::Color32::from_rgba_unmultiplied(15, 23, 42, 30)
-                        },
-                    ))
-                    .corner_radius(egui::CornerRadius::same(10))
-                    .shadow(egui::epaint::Shadow {
-                        offset: [0, 1],
-                        blur: 6,
-                        spread: 0,
-                        color: egui::Color32::from_black_alpha(if dark { 60 } else { 10 }),
-                    })
-                    .inner_margin(egui::Margin::symmetric(14, 1));
-                group.show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .id_salt("keymap_list")
-                        .max_height(list_h)
-                        .min_scrolled_height(list_h)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            for (i, action) in Action::ALL.iter().copied().enumerate() {
-                                let row_w = ui.available_width();
-                                let (row, row_resp) =
-                                    ui.allocate_exact_size(egui::vec2(row_w, row_h), egui::Sense::click());
-                                if i > 0 {
-                                    ui.painter().hline(
-                                        row.x_range(),
-                                        row.top(),
-                                        egui::Stroke::new(1.0, p.border.gamma_multiply(0.6)),
-                                    );
-                                }
-                                ui.painter().text(
-                                    egui::pos2(row.left(), row.center().y),
-                                    egui::Align2::LEFT_CENTER,
-                                    tr(ui.ctx(), action.label()),
-                                    egui::FontId::proportional(13.0),
-                                    p.text,
-                                );
-
-                                let recording = self.keymap_recording == Some(action);
-                                let hovered = row_resp.hovered();
-                                let right = row.right();
-                                let cy = row.center().y;
-                                if recording {
-                                    // A field waiting for keys.
-                                    let text = tr(ui.ctx(), "Press keys…");
-                                    let font = egui::FontId::proportional(12.0);
-                                    let w = ui.painter().layout_no_wrap(text.to_owned(), font.clone(), p.blue).size().x + 20.0;
-                                    let field = egui::Rect::from_min_max(egui::pos2(right - w, cy - 12.0), egui::pos2(right, cy + 12.0));
-                                    ui.painter().rect(
-                                        field,
-                                        egui::CornerRadius::same(6),
-                                        p.surface,
-                                        egui::Stroke::new(1.5, p.blue),
-                                        egui::StrokeKind::Inside,
-                                    );
-                                    ui.painter().text(field.center(), egui::Align2::CENTER_CENTER, text, font, p.blue);
-                                } else if let Some(sc) = self.keymap.get(action) {
-                                    // One keycap per key, laid out from the right edge.
-                                    let font = egui::FontId::proportional(12.0);
-                                    let mut x = right;
-                                    for key in sc.keys().iter().rev() {
-                                        let galley = ui.painter().layout_no_wrap(key.clone(), font.clone(), p.text);
-                                        let w = (galley.size().x + 10.0).max(22.0);
-                                        let cap = egui::Rect::from_min_max(egui::pos2(x - w, cy - 11.0), egui::pos2(x, cy + 11.0));
-                                        // Slightly deeper bottom edge reads as a key.
-                                        ui.painter().rect_filled(
-                                            cap.translate(egui::vec2(0.0, 1.0)),
-                                            egui::CornerRadius::same(5),
-                                            p.border,
-                                        );
-                                        ui.painter().rect(
-                                            cap,
-                                            egui::CornerRadius::same(5),
-                                            p.subtle,
-                                            egui::Stroke::new(1.0, if hovered { p.pressed } else { p.border }),
-                                            egui::StrokeKind::Inside,
-                                        );
-                                        ui.painter().galley(
-                                            cap.center() - galley.size() * 0.5,
-                                            galley,
-                                            if hovered { p.strong } else { p.text },
-                                        );
-                                        x -= w + 4.0;
-                                    }
-                                } else {
-                                    ui.painter().text(
-                                        egui::pos2(right, cy),
-                                        egui::Align2::RIGHT_CENTER,
-                                        tr(ui.ctx(), "Not set"),
-                                        egui::FontId::proportional(12.0),
-                                        if hovered { p.muted } else { p.faint },
-                                    );
-                                }
-
-                                if row_resp.clicked() {
-                                    self.keymap_recording = if recording { None } else { Some(action) };
-                                    self.keymap_note = None;
-                                }
-                                row_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-                            }
-                        });
-                });
-
-                if let Some(note) = &self.keymap_note {
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new(note).size(11.5).color(p.amber));
+                // Segmented tab bar: General, Font, Shortcuts
+                let tab_idx = match self.settings_tab {
+                    SettingsTab::General => 0,
+                    SettingsTab::Font => 1,
+                    SettingsTab::Shortcuts => 2,
+                };
+                if let Some(clicked) = segmented(ui, &["General", "Font", "Shortcuts"], tab_idx) {
+                    self.settings_tab = match clicked {
+                        0 => SettingsTab::General,
+                        1 => SettingsTab::Font,
+                        _ => SettingsTab::Shortcuts,
+                    };
+                    self.keymap_recording = None;
                 }
-                ui.add_space(10.0);
-                ui.label(
-                    egui::RichText::new(tr(ui.ctx(), "Click a row, then press the new keys. Delete clears, Esc cancels."))
-                        .size(11.5)
-                        .color(p.muted),
+                ui.add_space(14.0);
+
+                // Tab content: exactly card_h across all tabs
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), card_h),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        match self.settings_tab {
+                            SettingsTab::General => self.render_settings_general(ui, &p, dark, card_h),
+                            SettingsTab::Font => self.render_settings_font(ui, &p, dark, card_h),
+                            SettingsTab::Shortcuts => self.render_settings_shortcuts(ui, &p, dark, card_h),
+                        }
+                    },
                 );
 
+                // Footer
                 ui.add_space(14.0);
                 ui.horizontal(|ui| {
-                    if !self.keymap.is_default() {
+                    if self.settings_tab == SettingsTab::Shortcuts && !self.keymap.is_default() {
                         let reset = ui.add(
                             egui::Label::new(
                                 egui::RichText::new(tr(ui.ctx(), "Restore defaults")).size(12.5).color(p.blue),
@@ -1256,7 +1423,7 @@ impl JsonViewerApp {
             });
 
         if close {
-            self.keymap_open = false;
+            self.settings_open = false;
             self.keymap_recording = None;
             self.keymap_note = None;
         }
@@ -1269,8 +1436,8 @@ impl JsonViewerApp {
         self.handle_shortcuts(ctx);
         self.handle_tab_shortcuts(ctx);
         self.select_comparison_editor(ctx);
-        // The shortcut panel owns the keyboard while it is open.
-        if !self.keymap_open {
+        // The settings panel owns the keyboard while it is open.
+        if !self.settings_open {
             self.handle_edit_history(ctx);
             // Command+V replaces the whole document only when the editor is not being edited.
             // Insert at the selection, then format valid JSON as part of the same edit.
@@ -1492,7 +1659,7 @@ impl JsonViewerApp {
             });
 
         self.render_edit_modal(ctx);
-        self.render_keymap_panel(ctx);
+        self.render_settings_panel(ctx);
         let tab = &mut self.tabs[self.active];
         tab.sync_editor_editing(ctx);
         if let Some(comparison) = &mut tab.comparison {
@@ -1552,7 +1719,7 @@ impl JsonViewerApp {
     /// Runs the action whose shortcut was pressed this frame, if any.
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         self.keymap.publish(ctx);
-        if self.keymap_open {
+        if self.settings_open {
             self.capture_keymap_keys(ctx);
             return;
         }
@@ -2123,6 +2290,7 @@ impl JsonTab {
                         search_matches: &self.search_matches,
                         cur_match_path: None,
                         selected_path: self.node_selected_path.as_deref(),
+                        indent_step: self.indentation.tree_indent_step(),
                         reveal_match: false,
                     },
                 );
@@ -3788,6 +3956,7 @@ impl JsonViewerApp {
                     search_matches: &search_matches,
                     cur_match_path: cur_match_path.as_deref(),
                     selected_path: selected_path.as_deref(),
+                    indent_step: tab.indentation.tree_indent_step(),
                     reveal_match,
                 },
             );
@@ -3980,6 +4149,7 @@ struct TreePane<'a> {
     search_matches: &'a [String],
     cur_match_path: Option<&'a str>,
     selected_path: Option<&'a str>,
+    indent_step: f32,
     reveal_match: bool,
 }
 
@@ -4101,6 +4271,7 @@ fn show_tree_pane(
                             pane.cur_match_path,
                             pane.selected_path,
                             colors,
+                            pane.indent_step,
                             &mut action,
                             &mut max_row_w,
                             &mut current_match_rect,

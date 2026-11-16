@@ -1,6 +1,65 @@
+use eframe::egui;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::io::Read;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum Indentation {
+    #[default]
+    Two = 2,
+    Four = 4,
+    Six = 6,
+    Eight = 8,
+}
+
+impl Indentation {
+    pub(crate) const ALL: [Indentation; 4] = [
+        Indentation::Two,
+        Indentation::Four,
+        Indentation::Six,
+        Indentation::Eight,
+    ];
+
+    pub(crate) fn spaces(self) -> usize {
+        self as usize
+    }
+
+    pub(crate) fn from_spaces(n: usize) -> Self {
+        match n {
+            2 => Self::Two,
+            4 => Self::Four,
+            6 => Self::Six,
+            8 => Self::Eight,
+            _ => Self::Two,
+        }
+    }
+
+    pub(crate) fn current(ctx: &egui::Context) -> Self {
+        ctx.data(|data| data.get_temp(egui::Id::new("indentation")).unwrap_or_default())
+    }
+
+    pub(crate) fn apply(self, ctx: &egui::Context) {
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new("indentation"), self));
+    }
+
+    pub(crate) fn tree_indent_step(self) -> f32 {
+        10.0 + (self.spaces() as f32) * 5.0
+    }
+}
+
+pub(crate) fn to_pretty_json(value: &Value, indent: Indentation) -> Result<String, serde_json::Error> {
+    if indent == Indentation::Two {
+        return serde_json::to_string_pretty(value);
+    }
+    let spaces = indent.spaces();
+    let indent_bytes = vec![b' '; spaces];
+    let mut buf = Vec::new();
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(&indent_bytes);
+    let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
+    use serde::Serialize;
+    value.serialize(&mut ser)?;
+    Ok(String::from_utf8(buf).unwrap_or_default())
+}
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum SortMode {
@@ -833,3 +892,45 @@ pub(crate) fn try_request_json(text: &str) -> Option<(Value, String)> {
 
     Some((value, body_str))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_indentation_spaces_and_mapping() {
+        assert_eq!(Indentation::default().spaces(), 2);
+        assert_eq!(Indentation::from_spaces(2), Indentation::Two);
+        assert_eq!(Indentation::from_spaces(4), Indentation::Four);
+        assert_eq!(Indentation::from_spaces(6), Indentation::Six);
+        assert_eq!(Indentation::from_spaces(8), Indentation::Eight);
+        assert_eq!(Indentation::from_spaces(99), Indentation::Two); // fallback
+
+        assert_eq!(
+            Indentation::ALL,
+            [
+                Indentation::Two,
+                Indentation::Four,
+                Indentation::Six,
+                Indentation::Eight,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_to_pretty_json_indentation() {
+        let val = serde_json::json!({
+            "key": "value"
+        });
+
+        let json_2 = to_pretty_json(&val, Indentation::Two).unwrap();
+        assert_eq!(json_2, "{\n  \"key\": \"value\"\n}");
+
+        let json_4 = to_pretty_json(&val, Indentation::Four).unwrap();
+        assert_eq!(json_4, "{\n    \"key\": \"value\"\n}");
+
+        let json_8 = to_pretty_json(&val, Indentation::Eight).unwrap();
+        assert_eq!(json_8, "{\n        \"key\": \"value\"\n}");
+    }
+}
+

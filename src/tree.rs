@@ -22,11 +22,11 @@ pub(crate) fn render_tree_node(
     cur_match_path: Option<&str>,
     selected_path: Option<&str>,
     colors: ThemeColors,
+    indent_step: f32,
     action: &mut Option<TreeAction>,
     max_row_w: &mut f32,
     current_match_rect: &mut Option<egui::Rect>,
 ) {
-    let indent_step = 20.0;
     let base_x = ui.cursor().min.x;
     let indent = depth as f32 * indent_step;
 
@@ -58,6 +58,7 @@ pub(crate) fn render_tree_node(
                 cur_match_path,
                 selected_path,
                 colors,
+                indent_step,
                 action,
                 max_row_w,
                 current_match_rect,
@@ -200,6 +201,7 @@ pub(crate) fn render_tree_node(
                         cur_match_path,
                         selected_path,
                         colors,
+                        indent_step,
                         action,
                         max_row_w,
                         current_match_rect,
@@ -326,6 +328,7 @@ pub(crate) fn render_tree_node(
                         cur_match_path,
                         selected_path,
                         colors,
+                        indent_step,
                         action,
                         max_row_w,
                         current_match_rect,

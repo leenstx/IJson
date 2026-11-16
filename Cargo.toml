@@ -15,6 +15,7 @@ icon = ["assets/IJson.icns"]
 
 [dependencies]
 eframe = "0.31"
+serde = "1"
 serde_json = { version = "1", features = ["preserve_order"] }
 arboard = "3"
 png = "0.17"

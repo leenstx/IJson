@@ -23,6 +23,7 @@ impl Language {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn toggle(self) -> Self {
         match self {
             Self::English => Self::Chinese,
@@ -36,6 +37,17 @@ impl Language {
             return english;
         }
         match english {
+            "Settings" => "设置",
+            "General" => "常规",
+            "Font" => "字体",
+            "Shortcuts" => "快捷键",
+            "Language" => "语言",
+            "Interface language" => "界面语言",
+            "JSON Indentation" => "JSON 缩进",
+            "Number of spaces used for indentation when formatting" => "格式化 JSON 时的缩进空格数",
+            "spaces" => "空格",
+            "Default" => "默认",
+            "Current" => "当前",
             "New Tab" => "新建标签页",
             "Global font" => "全局字体",
             "Default font" => "默认字体",
