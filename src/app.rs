@@ -98,7 +98,7 @@ struct RailAction {
 impl JsonViewerApp {
     pub(crate) fn new(ctx: &egui::Context) -> Self {
         let mut app = Self {
-            tabs: vec![JsonTab::empty(1, local_stamp_now())],
+            tabs: vec![JsonTab::empty(1, local_stamp_now(), Indentation::default())],
             active: 0,
             next_id: 2,
             renaming: None,
@@ -275,8 +275,7 @@ impl JsonViewerApp {
             })
             .collect();
         if self.tabs.is_empty() {
-            let mut tab = JsonTab::empty(1, local_stamp_now());
-            tab.indentation = self.indentation;
+            let tab = JsonTab::empty(1, local_stamp_now(), self.indentation);
             self.tabs.push(tab);
             max_id = max_id.max(1);
         }
@@ -373,7 +372,7 @@ impl JsonViewerApp {
         self.surrender_focus(ctx, previous);
         let id = self.alloc_id();
         let name = unique_tab_name(&self.tabs, &local_stamp_now());
-        let mut tab = JsonTab::empty(id, name);
+        let mut tab = JsonTab::empty(id, name, self.indentation);
 
         let clipboard_text = arboard::Clipboard::new()
             .ok()
@@ -408,13 +407,14 @@ impl JsonViewerApp {
         self.surrender_focus(ctx, previous);
         let id = self.alloc_id();
         let right_id = self.alloc_id();
-        let mut tab = JsonTab::empty(id, name);
+        let mut tab = JsonTab::empty(id, name, self.indentation);
         // Keep an exact snapshot; later edits never change the source tab.
         tab.input = input;
         tab.reparse();
         tab.comparison = Some(Box::new(Comparison::new(JsonTab::empty(
             right_id,
             String::new(),
+            self.indentation,
         ))));
         self.tabs.insert(0, tab);
         self.active = 0;
@@ -709,10 +709,13 @@ impl JsonViewerApp {
         let mut comparison = tab.comparison.take().unwrap();
 
         let mut open_comparison = false;
-        for (document, x, right) in [
+        for (i, (document, x, right)) in [
             (&mut *tab, left_card.left().max(bar_left), left_card.right()),
             (&mut comparison.right, right_card.left(), right_card.right()),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let rect = egui::Rect::from_min_max(
                 egui::pos2(x, bar_rect.top()),
                 egui::pos2(right.max(x + 1.0), bar_rect.bottom()),
@@ -728,6 +731,15 @@ impl JsonViewerApp {
                 open_comparison = true;
             }
             document.poll_request_loading(ui.ctx());
+
+            let empty_left = toolbar.min_rect().right() + 4.0;
+            if right > empty_left + 8.0 {
+                let drag_rect = egui::Rect::from_min_max(
+                    egui::pos2(empty_left, bar_rect.top()),
+                    egui::pos2(right, bar_rect.bottom()),
+                );
+                window_drag_area(ui, drag_rect, if i == 0 { "comp_drag_left" } else { "comp_drag_right" });
+            }
         }
 
         comparison.refresh(&tab.input, tab.revision);
@@ -878,7 +890,11 @@ impl JsonViewerApp {
         if has_update && !self.update_viewed {
             let dot_pos = egui::pos2(btn_rect.right() - 4.0, btn_rect.top() + 4.0);
             controls_ui.painter().circle_filled(dot_pos, 3.5, egui::Color32::from_rgb(239, 68, 68));
-            controls_ui.painter().circle_stroke(dot_pos, 3.5, egui::Stroke::new(1.2, p.surface));
+            controls_ui.painter().circle_stroke(
+                dot_pos,
+                3.5,
+                egui::Stroke::new(1.2, if resp.hovered() || self.settings_open { p.hover } else { p.sidebar }),
+            );
         }
         let tip_base = tip_with_shortcut(controls_ui.ctx(), &tr(controls_ui.ctx(), "Settings"), Action::Settings);
         let tip = if has_update {
@@ -1596,8 +1612,8 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if compact_button(ui, "Update Now", true).clicked() {
-                            self.updater.download(ui.ctx().clone(), release.clone());
+                        if compact_button(ui, "Update & Restart", true).clicked() {
+                            self.updater.download(ui.ctx().clone(), release.clone(), true);
                         }
                         ui.add_space(6.0);
                         if compact_button(ui, "Release Notes", false).clicked() {
@@ -1626,12 +1642,24 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
                     };
                     ui.label(egui::RichText::new(size_text).size(11.0).color(p.muted));
                 }
+                UpdateStatus::Installing { version } => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(format!("{} (v{})…", tr(ui.ctx(), "Installing update and restarting"), version))
+                                .size(12.5)
+                                .color(p.strong)
+                                .strong(),
+                        );
+                    });
+                }
                 UpdateStatus::Downloaded { version, file_path } => {
                     ui.horizontal(|ui| {
                         let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
                         draw_lucide_icon(ui.painter(), icon_rect, LucideIcon::Check, egui::Color32::from_rgb(34, 197, 94));
                         ui.label(
-                            egui::RichText::new(format!("{} (v{})", tr(ui.ctx(), "Update downloaded"), version))
+                            egui::RichText::new(format!("{} (v{})", tr(ui.ctx(), "Update ready to install"), version))
                                 .size(12.5)
                                 .color(p.strong)
                                 .strong(),
@@ -1639,14 +1667,20 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
                     });
                     ui.add_space(2.0);
                     ui.label(
-                        egui::RichText::new(tr(ui.ctx(), "Installer has been downloaded to Downloads folder."))
+                        egui::RichText::new(tr(ui.ctx(), "The update has been downloaded. Restart to apply."))
                             .size(11.5)
                             .color(p.muted),
                     );
                     ui.add_space(8.0);
-                    if compact_button(ui, "Open Installer", true).clicked() {
-                        self.updater.open_installer(&file_path);
-                    }
+                    ui.horizontal(|ui| {
+                        if compact_button(ui, "Restart & Install", true).clicked() {
+                            self.updater.apply_and_restart(&file_path);
+                        }
+                        ui.add_space(6.0);
+                        if compact_button(ui, "Open Installer", false).clicked() {
+                            self.updater.open_installer(&file_path);
+                        }
+                    });
                 }
                 UpdateStatus::Checking => {
                     ui.horizontal(|ui| {
@@ -1809,7 +1843,10 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
                     SettingsTab::Shortcuts => 2,
                     SettingsTab::About => 3,
                 };
-                let badge_idx = if self.updater.has_update() { Some(3) } else { None };
+                let badge_idx = if self.updater.has_update() && !self.update_viewed { Some(3) } else { None };
+                if self.settings_tab == SettingsTab::About {
+                    self.update_viewed = true;
+                }
                 if let Some(clicked) = settings_tab_bar(ui, &["General", "Font", "Shortcuts", "About"], tab_idx, badge_idx) {
                     self.settings_tab = match clicked {
                         0 => SettingsTab::General,
@@ -1924,8 +1961,6 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
                     egui::pos2((full.left() + side_gap).round(), (full.top() + TOP_ROW_H + 6.0).round()),
                     egui::pos2((full.right() - 8.0).round(), (full.bottom() - 8.0).round()),
                 );
-                // Empty toolbar space moves the window; buttons registered later win clicks.
-                window_drag_area(ui, bar_rect, "toolbar_drag");
 
                 let mut tb = ui.new_child(
                     egui::UiBuilder::default()
@@ -1938,9 +1973,19 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
                     tb.add_space((72.0 - bar_rect.left()).max(0.0));
                 }
                 if self.sidebar_hidden {
-                    if btn_sidebar(&mut tb, false).clicked() {
+                    let resp = btn_sidebar(&mut tb, false);
+                    if resp.clicked() {
                         self.sidebar_hidden = false;
                         self.cache_dirty = true;
+                    }
+                    if self.updater.has_update() && !self.update_viewed {
+                        let dot_pos = egui::pos2(resp.rect.right() - 4.0, resp.rect.top() + 4.0);
+                        tb.painter().circle_filled(dot_pos, 3.5, egui::Color32::from_rgb(239, 68, 68));
+                        tb.painter().circle_stroke(
+                            dot_pos,
+                            3.5,
+                            egui::Stroke::new(1.2, if resp.hovered() { p.hover } else { p.titlebar }),
+                        );
                     }
                     if btn_new_tab(&mut tb).clicked() {
                         let ctx = tb.ctx().clone();
@@ -2003,6 +2048,17 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
                 );
                 let pill_w = search_rect.width().clamp(120.0, 300.0).min(search_rect.width());
                 tab.render_search_box(&mut search_ui, pill_w, p);
+
+                // Register window drag strictly on the empty toolbar space between tb and search box
+                let empty_left = tb.min_rect().right() + 4.0;
+                let empty_right = search_rect.right() - pill_w - 6.0;
+                if empty_right > empty_left {
+                    let empty_rect = egui::Rect::from_min_max(
+                        egui::pos2(empty_left, bar_rect.top()),
+                        egui::pos2(empty_right, bar_rect.bottom()),
+                    );
+                    window_drag_area(ui, empty_rect, "toolbar_drag");
+                }
 
                 if edit_mode {
                     // EDIT MODE: one card with the editor.
@@ -2312,7 +2368,6 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
         );
 
         // Top row: room for the traffic lights, sidebar toggle, and new tab on the right.
-        window_drag_area(ui, top, "sidebar_drag");
         let mut row = ui.new_child(
             egui::UiBuilder::default()
                 .max_rect(top)
@@ -2322,15 +2377,32 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
         if cfg!(target_os = "macos") {
             row.add_space(64.0);
         }
-        if btn_sidebar(&mut row, true).clicked() {
+        let sidebar_btn = btn_sidebar(&mut row, true);
+        if sidebar_btn.clicked() {
             self.sidebar_hidden = true;
             self.cache_dirty = true;
         }
+        let mut new_tab_resp = None;
         row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |row| {
-            if btn_new_tab(row).clicked() {
+            let resp = btn_new_tab(row);
+            if resp.clicked() {
                 action.add = true;
             }
+            new_tab_resp = Some(resp);
         });
+
+        // Register drag area strictly on the empty space between sidebar button and new tab button
+        let empty_left = sidebar_btn.rect.right() + 2.0;
+        let empty_right = new_tab_resp
+            .map(|r| r.rect.left() - 2.0)
+            .unwrap_or(top.right() - 30.0);
+        if empty_right > empty_left {
+            let empty_rect = egui::Rect::from_min_max(
+                egui::pos2(empty_left, top.top()),
+                egui::pos2(empty_right, top.bottom()),
+            );
+            window_drag_area(ui, empty_rect, "sidebar_drag");
+        }
 
         let rows: Vec<(u64, String, bool, bool)> = self
             .tabs

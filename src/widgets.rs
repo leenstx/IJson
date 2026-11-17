@@ -138,11 +138,12 @@ pub(crate) fn btn_mode(ui: &mut egui::Ui, edit_mode: bool) -> egui::Response {
     let p = UiColors::current(ui);
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 24.0), egui::Sense::click());
     draw_button_bg(ui, rect, &resp);
-    let (icon, color, tip) = if edit_mode {
-        (LucideIcon::ListTree, p.blue, "Edit mode · click to view")
+    let (icon, tip) = if edit_mode {
+        (LucideIcon::ListTree, "Edit mode · click to view")
     } else {
-        (LucideIcon::TextPen, p.blue, "View mode · click to edit")
+        (LucideIcon::TextPen, "View mode · click to edit")
     };
+    let color = if resp.hovered() { p.strong } else { p.text };
     let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0));
     draw_lucide_icon(ui.painter(), icon_rect, icon, color);
     resp.on_hover_text(tip_text(ui.ctx(), tip, Some(Action::ToggleEditMode)))

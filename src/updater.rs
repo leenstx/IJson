@@ -6,16 +6,16 @@ use std::time::Duration;
 pub(crate) const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(crate) const PLATFORM_ASSET_NAME: &str = "IJson-arm64-macos.dmg";
+pub(crate) const PLATFORM_ASSET_NAMES: &[&str] = &["IJson-arm64-macos.app.zip", "IJson-arm64-macos.dmg"];
 
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-pub(crate) const PLATFORM_ASSET_NAME: &str = "IJson-x64-macos.dmg";
+pub(crate) const PLATFORM_ASSET_NAMES: &[&str] = &["IJson-x64-macos.app.zip", "IJson-x64-macos.dmg"];
 
 #[cfg(target_os = "windows")]
-pub(crate) const PLATFORM_ASSET_NAME: &str = "IJson-x64-windows.zip";
+pub(crate) const PLATFORM_ASSET_NAMES: &[&str] = &["IJson-x64-windows.zip"];
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub(crate) const PLATFORM_ASSET_NAME: &str = "";
+pub(crate) const PLATFORM_ASSET_NAMES: &[&str] = &[];
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ReleaseInfo {
@@ -40,6 +40,9 @@ pub(crate) enum UpdateStatus {
         downloaded_bytes: u64,
         total_bytes: Option<u64>,
         progress: f32,
+    },
+    Installing {
+        version: String,
     },
     Downloaded {
         version: String,
@@ -79,6 +82,7 @@ impl Updater {
             self.status(),
             UpdateStatus::Available(_)
                 | UpdateStatus::Downloading { .. }
+                | UpdateStatus::Installing { .. }
                 | UpdateStatus::Downloaded { .. }
         )
     }
@@ -118,7 +122,7 @@ impl Updater {
         });
     }
 
-    pub(crate) fn download(&self, ctx: egui::Context, release: ReleaseInfo) {
+    pub(crate) fn download(&self, ctx: egui::Context, release: ReleaseInfo, auto_install: bool) {
         let download_url = match &release.download_url {
             Some(u) => u.clone(),
             None => {
@@ -150,14 +154,26 @@ impl Updater {
             inner.is_downloading = false;
             match res {
                 Ok(path) => {
-                    inner.status = UpdateStatus::Downloaded {
-                        version: release.version.clone(),
-                        file_path: path.clone(),
-                    };
-                    // Automatically open installer on macOS
-                    #[cfg(target_os = "macos")]
-                    {
-                        let _ = std::process::Command::new("open").arg(&path).spawn();
+                    if auto_install {
+                        inner.status = UpdateStatus::Installing {
+                            version: release.version.clone(),
+                        };
+                        drop(inner);
+                        ctx.request_repaint();
+
+                        if let Err(err) = install_and_restart(&path) {
+                            let mut inner = inner_clone.lock().unwrap();
+                            inner.status = UpdateStatus::Downloaded {
+                                version: release.version.clone(),
+                                file_path: path,
+                            };
+                            eprintln!("Auto-install failed: {err}");
+                        }
+                    } else {
+                        inner.status = UpdateStatus::Downloaded {
+                            version: release.version.clone(),
+                            file_path: path,
+                        };
                     }
                 }
                 Err(err) => {
@@ -166,6 +182,10 @@ impl Updater {
             }
             ctx.request_repaint();
         });
+    }
+
+    pub(crate) fn apply_and_restart(&self, path: &Path) {
+        let _ = install_and_restart(path);
     }
 
     pub(crate) fn open_installer(&self, path: &Path) {
@@ -236,23 +256,26 @@ fn fetch_latest_release() -> Result<ReleaseInfo, String> {
                 let mut asset_name = None;
 
                 if let Some(assets) = v.get("assets").and_then(|a| a.as_array()) {
-                    for a in assets {
-                        if let Some(aname) = a.get("name").and_then(|s| s.as_str()) {
-                            if aname == PLATFORM_ASSET_NAME {
-                                asset_name = Some(aname.to_string());
-                                download_url = a.get("browser_download_url").and_then(|s| s.as_str()).map(str::to_string);
-                                asset_size = a.get("size").and_then(|n| n.as_u64());
-                                break;
+                    'find_asset: for target_name in PLATFORM_ASSET_NAMES {
+                        for a in assets {
+                            if let Some(aname) = a.get("name").and_then(|s| s.as_str()) {
+                                if aname == *target_name {
+                                    asset_name = Some(aname.to_string());
+                                    download_url = a.get("browser_download_url").and_then(|s| s.as_str()).map(str::to_string);
+                                    asset_size = a.get("size").and_then(|n| n.as_u64());
+                                    break 'find_asset;
+                                }
                             }
                         }
                     }
                 }
 
-                if download_url.is_none() && !PLATFORM_ASSET_NAME.is_empty() {
+                let fallback_name = PLATFORM_ASSET_NAMES.first().copied().unwrap_or("");
+                if download_url.is_none() && !fallback_name.is_empty() {
                     download_url = Some(format!(
-                        "https://github.com/leenstx/IJson/releases/download/{tag}/{PLATFORM_ASSET_NAME}"
+                        "https://github.com/leenstx/IJson/releases/download/{tag}/{fallback_name}"
                     ));
-                    asset_name = Some(PLATFORM_ASSET_NAME.to_string());
+                    asset_name = Some(fallback_name.to_string());
                 }
 
                 return Ok(ReleaseInfo {
@@ -329,9 +352,10 @@ fn fetch_latest_release() -> Result<ReleaseInfo, String> {
 
     let tag = tag.ok_or_else(|| "Could not determine latest version tag from GitHub".to_string())?;
     let version = tag.trim_start_matches(|c| c == 'v' || c == 'V').to_string();
-    let download_url = if !PLATFORM_ASSET_NAME.is_empty() {
+    let fallback_name = PLATFORM_ASSET_NAMES.first().copied().unwrap_or("");
+    let download_url = if !fallback_name.is_empty() {
         Some(format!(
-            "https://github.com/leenstx/IJson/releases/download/{tag}/{PLATFORM_ASSET_NAME}"
+            "https://github.com/leenstx/IJson/releases/download/{tag}/{fallback_name}"
         ))
     } else {
         None
@@ -344,7 +368,7 @@ fn fetch_latest_release() -> Result<ReleaseInfo, String> {
         body: String::new(),
         html_url: format!("https://github.com/leenstx/IJson/releases/tag/{tag}"),
         download_url,
-        asset_name: if PLATFORM_ASSET_NAME.is_empty() { None } else { Some(PLATFORM_ASSET_NAME.to_string()) },
+        asset_name: if fallback_name.is_empty() { None } else { Some(fallback_name.to_string()) },
         asset_size: None,
     })
 }
@@ -361,22 +385,9 @@ fn extract_tag_from_url(url: &str) -> Option<String> {
 }
 
 fn download_dest_dir() -> PathBuf {
-    if cfg!(target_os = "macos") {
-        if let Some(home) = std::env::var_os("HOME") {
-            let dl = PathBuf::from(home).join("Downloads");
-            if dl.is_dir() {
-                return dl;
-            }
-        }
-    } else if cfg!(target_os = "windows") {
-        if let Some(userprofile) = std::env::var_os("USERPROFILE") {
-            let dl = PathBuf::from(userprofile).join("Downloads");
-            if dl.is_dir() {
-                return dl;
-            }
-        }
-    }
-    std::env::temp_dir()
+    let dir = std::env::temp_dir().join("IJson-updates");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
 }
 
 fn download_file(
@@ -441,6 +452,261 @@ fn download_file(
     Ok(dest_path)
 }
 
+#[cfg(target_os = "macos")]
+fn current_app_bundle() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let canonical = exe.canonicalize().unwrap_or(exe);
+    let mut curr = canonical.as_path();
+    while let Some(parent) = curr.parent() {
+        if parent.extension().and_then(|ext| ext.to_str()) == Some("app") {
+            return Some(parent.to_path_buf());
+        }
+        curr = parent;
+    }
+    let default_app = PathBuf::from("/Applications/IJson.app");
+    if default_app.exists() {
+        return Some(default_app);
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn extract_app_bundle(archive_path: &Path, staging_dir: &Path) -> Result<PathBuf, String> {
+    let filename = archive_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    if filename.ends_with(".zip") {
+        let status = std::process::Command::new("ditto")
+            .arg("-x")
+            .arg("-k")
+            .arg(archive_path)
+            .arg(staging_dir)
+            .status()
+            .map_err(|e| format!("Failed to run ditto: {e}"))?;
+        if !status.success() {
+            return Err("Failed to extract update zip".to_string());
+        }
+    } else if filename.ends_with(".dmg") {
+        let mount_point = staging_dir.join("dmg_mount");
+        let _ = std::fs::create_dir_all(&mount_point);
+
+        let attach_status = std::process::Command::new("hdiutil")
+            .arg("attach")
+            .arg(archive_path)
+            .arg("-nobrowse")
+            .arg("-readonly")
+            .arg("-mountpoint")
+            .arg(&mount_point)
+            .status()
+            .map_err(|e| format!("Failed to attach DMG: {e}"))?;
+
+        if !attach_status.success() {
+            return Err("Failed to mount DMG disk image".to_string());
+        }
+
+        let mut app_src = None;
+        if let Ok(entries) = std::fs::read_dir(&mount_point) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|s| s.to_str()) == Some("app") {
+                    app_src = Some(p);
+                    break;
+                }
+            }
+        }
+
+        let app_src = match app_src {
+            Some(s) => s,
+            None => {
+                let _ = std::process::Command::new("hdiutil")
+                    .arg("detach")
+                    .arg(&mount_point)
+                    .arg("-force")
+                    .status();
+                return Err("No .app bundle found inside DMG".to_string());
+            }
+        };
+
+        let target_in_staging = staging_dir.join("IJson.app");
+        let copy_status = std::process::Command::new("ditto")
+            .arg(&app_src)
+            .arg(&target_in_staging)
+            .status()
+            .map_err(|e| format!("Failed to copy app from DMG: {e}"))?;
+
+        let _ = std::process::Command::new("hdiutil")
+            .arg("detach")
+            .arg(&mount_point)
+            .arg("-force")
+            .status();
+
+        if !copy_status.success() {
+            return Err("Failed to copy .app bundle from DMG".to_string());
+        }
+    } else {
+        return Err(format!("Unsupported archive format: {filename}"));
+    }
+
+    if let Ok(entries) = std::fs::read_dir(staging_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|s| s.to_str()) == Some("app") {
+                return Ok(p);
+            }
+        }
+    }
+
+    Err("Could not find extracted .app bundle".to_string())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn install_and_restart(downloaded_archive: &Path) -> Result<(), String> {
+    let target_app = current_app_bundle().unwrap_or_else(|| PathBuf::from("/Applications/IJson.app"));
+
+    let staging_parent = std::env::temp_dir().join(format!("ijson_update_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging_parent);
+    std::fs::create_dir_all(&staging_parent)
+        .map_err(|e| format!("Cannot create staging dir: {e}"))?;
+
+    let staged_app = extract_app_bundle(downloaded_archive, &staging_parent)?;
+
+    let staged_exe = staged_app.join("Contents/MacOS/IJson");
+    if staged_exe.exists() {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(&staged_exe) {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o755);
+            let _ = std::fs::set_permissions(&staged_exe, perms);
+        }
+    }
+
+    let pid = std::process::id();
+    let script_path = staging_parent.join("install_and_restart.sh");
+
+    let script_content = format!(
+        r#"#!/bin/sh
+PID="{pid}"
+STAGED_APP="{staged_app}"
+TARGET_APP="{target_app}"
+STAGE_PARENT="{staging_parent}"
+
+while kill -0 "$PID" 2>/dev/null; do
+    sleep 0.1
+done
+
+rm -rf "$TARGET_APP"
+ditto "$STAGED_APP" "$TARGET_APP"
+xattr -r -d com.apple.quarantine "$TARGET_APP" 2>/dev/null || true
+touch "$TARGET_APP"
+rm -rf "$STAGE_PARENT"
+
+open -a "$TARGET_APP" || open "$TARGET_APP"
+rm -f "$0"
+"#,
+        pid = pid,
+        staged_app = staged_app.display(),
+        target_app = target_app.display(),
+        staging_parent = staging_parent.display(),
+    );
+
+    std::fs::write(&script_path, script_content)
+        .map_err(|e| format!("Cannot write update script: {e}"))?;
+
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+
+    std::process::Command::new("/bin/sh")
+        .arg(&script_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Cannot spawn update script: {e}"))?;
+
+    std::process::exit(0);
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn install_and_restart(downloaded_archive: &Path) -> Result<(), String> {
+    let current_exe = std::env::current_exe().map_err(|e| format!("Cannot get current exe: {e}"))?;
+    let staging_parent = std::env::temp_dir().join(format!("ijson_update_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging_parent);
+    std::fs::create_dir_all(&staging_parent)
+        .map_err(|e| format!("Cannot create staging dir: {e}"))?;
+
+    let status = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
+                downloaded_archive.display(),
+                staging_parent.display()
+            ),
+        ])
+        .status()
+        .map_err(|e| format!("Failed to expand archive: {e}"))?;
+
+    if !status.success() {
+        return Err("Failed to extract update zip".to_string());
+    }
+
+    let mut new_exe = None;
+    if let Ok(entries) = std::fs::read_dir(&staging_parent) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.file_name().and_then(|s| s.to_str()).map(|s| s.to_lowercase()) == Some("ijson.exe".to_string()) {
+                new_exe = Some(p);
+                break;
+            }
+        }
+    }
+
+    let new_exe = new_exe.ok_or_else(|| "Could not find IJson.exe in extracted update".to_string())?;
+    let pid = std::process::id();
+    let bat_path = staging_parent.join("update_restart.cmd");
+
+    let bat_content = format!(
+        r#"@echo off
+set PID={pid}
+set NEW_EXE="{new_exe}"
+set TARGET_EXE="{target_exe}"
+set STAGE_DIR="{staging_parent}"
+
+:WAIT_LOOP
+timeout /t 1 /nobreak >nul
+tasklist /fi "PID eq %PID%" 2>nul | find "%PID%" >nul
+if not errorlevel 1 goto WAIT_LOOP
+
+copy /y %NEW_EXE% %TARGET_EXE% >nul
+start "" %TARGET_EXE%
+rmdir /s /q %STAGE_DIR% >nul 2>&1
+exit
+"#,
+        pid = pid,
+        new_exe = new_exe.display(),
+        target_exe = current_exe.display(),
+        staging_parent = staging_parent.display(),
+    );
+
+    std::fs::write(&bat_path, bat_content).map_err(|e| format!("Cannot write batch script: {e}"))?;
+
+    std::process::Command::new("cmd")
+        .args(["/C", "start", "/min", "", &bat_path.display().to_string()])
+        .spawn()
+        .map_err(|e| format!("Cannot spawn batch updater: {e}"))?;
+
+    std::process::exit(0);
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub(crate) fn install_and_restart(downloaded_archive: &Path) -> Result<(), String> {
+    let _ = std::process::Command::new("xdg-open").arg(downloaded_archive).spawn();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,9 +730,21 @@ mod tests {
 
     #[test]
     fn test_version_comparison() {
-        // Test how ScrollStyle is documented or structured
-        let s = egui::style::ScrollStyle::default();
-        println!("{:#?}", s);
         assert!(is_newer("v0.0.14", "0.0.13"));
+        assert!(!is_newer("v0.0.13", "0.0.14"));
+        assert!(!is_newer("v0.0.14", "0.0.14"));
+    }
+
+    #[test]
+    fn test_platform_assets() {
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        assert!(!PLATFORM_ASSET_NAMES.is_empty());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_current_app_bundle_resolution() {
+        // Function should run without panic
+        let _ = current_app_bundle();
     }
 }

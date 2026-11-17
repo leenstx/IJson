@@ -116,7 +116,7 @@ pub(crate) struct JsonTab {
 }
 
 impl JsonTab {
-    pub(crate) fn empty(id: u64, name: String) -> Self {
+    pub(crate) fn empty(id: u64, name: String, indentation: Indentation) -> Self {
         let mut tab = Self {
             id,
             auto_name: name.clone(),
@@ -163,7 +163,7 @@ impl JsonTab {
             editor_fold_starts: HashSet::new(),
             editor_galley_cache: None,
             edit_mode: false,
-            indentation: Indentation::default(),
+            indentation,
             node_collapsed: HashSet::new(),
             node_selected_path: None,
             node_scroll_x: 0.0,
@@ -907,13 +907,15 @@ pub(crate) fn tab_from_value(v: &Value, fallback_id: u64) -> Option<LoadedTab> {
         .or_else(|| auto_name.clone())
         .unwrap_or_else(local_stamp_now);
     let auto_name = auto_name.unwrap_or_else(|| name.clone());
-    let mut tab = JsonTab::empty(id, name);
+    let indent = v
+        .get("indentation")
+        .and_then(|x| x.as_u64())
+        .map(|n| Indentation::from_spaces(n as usize))
+        .unwrap_or_default();
+    let mut tab = JsonTab::empty(id, name, indent);
     tab.auto_name = auto_name;
     tab.pinned = v.get("pinned").and_then(|x| x.as_bool()).unwrap_or(false);
     tab.edit_mode = v.get("edit_mode").and_then(|x| x.as_bool()).unwrap_or(false);
-    if let Some(n) = v.get("indentation").and_then(|x| x.as_u64()) {
-        tab.indentation = Indentation::from_spaces(n as usize);
-    }
     tab.input = input;
     if let Some(lines) = v.get("editor_folds").and_then(|x| x.as_array()) {
         tab.editor_folds = lines
