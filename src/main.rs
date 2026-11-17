@@ -14,6 +14,7 @@ mod model;
 mod tab;
 mod theme;
 mod tree;
+mod updater;
 mod widgets;
 
 use eframe::egui;

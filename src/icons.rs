@@ -3,7 +3,7 @@
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Shape, Stroke};
 
 #[allow(dead_code)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum LucideIcon {
     Plus,
     WandSparkles,
@@ -47,6 +47,12 @@ pub(crate) enum LucideIcon {
     Command,
     MopSparkles,
     SlidersHorizontal,
+    RefreshCw,
+    Check,
+    ExternalLink,
+    TextAlignJustifyStart,
+    ListTree,
+    TextPen,
 }
 
 #[derive(Clone, Copy)]
@@ -68,6 +74,38 @@ fn icon_elements(icon: LucideIcon) -> &'static [LucideElem] {
             LucideElem::Path("M21 5h-7"),
             LucideElem::Path("M8 10v4"),
             LucideElem::Path("M8 12H3"),
+        ],
+        LucideIcon::RefreshCw => &[
+            LucideElem::Path("M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"),
+            LucideElem::Path("M21 3v5h-5"),
+            LucideElem::Path("M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"),
+            LucideElem::Path("M8 16H3v5"),
+        ],
+        LucideIcon::Check => &[
+            LucideElem::Path("M20 6 9 17l-5-5"),
+        ],
+        LucideIcon::ExternalLink => &[
+            LucideElem::Path("M15 3h6v6"),
+            LucideElem::Path("M10 14 21 3"),
+            LucideElem::Path("M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"),
+        ],
+        LucideIcon::TextAlignJustifyStart => &[
+            LucideElem::Path("M3 5h18"),
+            LucideElem::Path("M3 12h18"),
+            LucideElem::Path("M3 19h10"),
+        ],
+        LucideIcon::ListTree => &[
+            LucideElem::Path("M8 5h13"),
+            LucideElem::Path("M13 12h8"),
+            LucideElem::Path("M13 19h8"),
+            LucideElem::Path("M3 10a2 2 0 0 0 2 2h3"),
+            LucideElem::Path("M3 5v12a2 2 0 0 0 2 2h3"),
+        ],
+        LucideIcon::TextPen => &[
+            LucideElem::Path("M12 12H3"),
+            LucideElem::Path("M21 5H3"),
+            LucideElem::Path("M21.377 14.626a1 1 0 1 0-3.004-3.004l-5.01 5.012a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506z"),
+            LucideElem::Path("M8 19H3"),
         ],
         LucideIcon::MopSparkles => &[
             LucideElem::Path("M10 22a3 3 0 0 1 -3 -3"),
@@ -205,8 +243,8 @@ fn icon_elements(icon: LucideIcon) -> &'static [LucideElem] {
             LucideElem::Path("m7 4 5 5 5-5"),
         ],
         LucideIcon::Search => &[
-            LucideElem::Path("m21 21-4.34-4.34"),
-            LucideElem::Circle(11.0, 11.0, 8.0),
+            LucideElem::Path("m21 21-6.4-6.4"),
+            LucideElem::Circle(10.0, 10.0, 6.5),
         ],
         LucideIcon::Key => &[
             LucideElem::Path("m2 21 9.6-9.6"),
@@ -601,3 +639,30 @@ fn read_num(bytes: &[u8], i: &mut usize) -> f32 {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0.0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_icons_flatten() {
+        for icon in [
+            LucideIcon::TextAlignJustifyStart,
+            LucideIcon::ListTree,
+            LucideIcon::TextPen,
+        ] {
+            for elem in icon_elements(icon) {
+                if let LucideElem::Path(d) = elem {
+                    let segments = flatten_path(d, Pos2::ZERO, 1.0);
+                    assert!(!segments.is_empty(), "path for {:?} should yield segments", icon);
+                    for (pts, _) in segments {
+                        for pt in pts {
+                            assert!(pt.x.is_finite() && pt.y.is_finite());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

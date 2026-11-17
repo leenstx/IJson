@@ -206,6 +206,19 @@ pub(crate) fn setup_theme(ctx: &egui::Context) {
         style.spacing.menu_width = 204.0;
         style.spacing.menu_margin = egui::Margin::symmetric(6, 6);
         style.spacing.window_margin = egui::Margin::same(16);
+        // Refined macOS overlay scrollbars:
+        style.spacing.scroll.bar_width = 4.0;
+        style.spacing.scroll.floating_width = 4.0;
+        style.spacing.scroll.handle_min_length = 20.0;
+        style.spacing.scroll.bar_inner_margin = 1.0;
+        style.spacing.scroll.bar_outer_margin = 2.0;
+        style.spacing.scroll.floating = true;
+        style.spacing.scroll.dormant_background_opacity = 0.0;
+        style.spacing.scroll.active_background_opacity = 0.0;
+        style.spacing.scroll.interact_background_opacity = 0.0;
+        style.spacing.scroll.dormant_handle_opacity = 0.0;
+        style.spacing.scroll.active_handle_opacity = 0.22;
+        style.spacing.scroll.interact_handle_opacity = 0.45;
     });
     }
 }

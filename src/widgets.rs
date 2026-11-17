@@ -27,7 +27,7 @@ pub(crate) fn btn_sidebar(ui: &mut egui::Ui, shown: bool) -> egui::Response {
 }
 
 pub(crate) fn btn_format(ui: &mut egui::Ui) -> egui::Response {
-    icon_button(ui, LucideIcon::WandSparkles, UiColors::current(ui).blue, "Format JSON (Pretty Print)", Some(Action::Format))
+    icon_button(ui, LucideIcon::TextAlignJustifyStart, UiColors::current(ui).blue, "Format JSON (Pretty Print)", Some(Action::Format))
 }
 
 pub(crate) fn btn_sort(ui: &mut egui::Ui, mode: SortMode) -> egui::Response {
@@ -58,8 +58,31 @@ pub(crate) fn btn_redo(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
     state_button(ui, LucideIcon::Redo, UiColors::current(ui).strong, "Redo (⌘⇧Z)", enabled, None)
 }
 
-pub(crate) fn btn_compress(ui: &mut egui::Ui) -> egui::Response {
-    icon_button(ui, LucideIcon::FoldVertical, UiColors::current(ui).amber, "Copy Minified JSON", Some(Action::CopyMinified))
+pub(crate) fn btn_compress(ui: &mut egui::Ui, copied: bool) -> egui::Response {
+    let p = UiColors::current(ui);
+    if copied {
+        let green = if ui.visuals().dark_mode {
+            egui::Color32::from_rgb(74, 222, 128)
+        } else {
+            egui::Color32::from_rgb(22, 163, 74)
+        };
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 24.0), egui::Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(rect, egui::CornerRadius::same(4), p.hover);
+        } else {
+            let green_bg = if ui.visuals().dark_mode {
+                egui::Color32::from_rgba_premultiplied(74, 222, 128, 25)
+            } else {
+                egui::Color32::from_rgba_premultiplied(22, 163, 74, 22)
+            };
+            ui.painter().rect_filled(rect, egui::CornerRadius::same(4), green_bg);
+        }
+        let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0));
+        draw_lucide_icon(ui.painter(), icon_rect, LucideIcon::Check, green);
+        resp.on_hover_text(tip_text(ui.ctx(), "Copied minified JSON", Some(Action::CopyMinified)))
+    } else {
+        icon_button(ui, LucideIcon::FoldVertical, UiColors::current(ui).amber, "Copy Minified JSON", Some(Action::CopyMinified))
+    }
 }
 
 pub(crate) fn btn_simplify(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
@@ -67,8 +90,31 @@ pub(crate) fn btn_simplify(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
         "Extract Minimal JSON / Clear Values\n1st click: keep only the first array element with original values\n2nd click: clear values (numbers → 0, booleans → false, strings → \"\")", enabled, Some(Action::Simplify))
 }
 
-pub(crate) fn btn_copy(ui: &mut egui::Ui) -> egui::Response {
-    icon_button(ui, LucideIcon::Copy, UiColors::current(ui).strong, "Copy Full JSON", Some(Action::CopyJson))
+pub(crate) fn btn_copy(ui: &mut egui::Ui, copied: bool) -> egui::Response {
+    let p = UiColors::current(ui);
+    if copied {
+        let green = if ui.visuals().dark_mode {
+            egui::Color32::from_rgb(74, 222, 128)
+        } else {
+            egui::Color32::from_rgb(22, 163, 74)
+        };
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 24.0), egui::Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(rect, egui::CornerRadius::same(4), p.hover);
+        } else {
+            let green_bg = if ui.visuals().dark_mode {
+                egui::Color32::from_rgba_premultiplied(74, 222, 128, 25)
+            } else {
+                egui::Color32::from_rgba_premultiplied(22, 163, 74, 22)
+            };
+            ui.painter().rect_filled(rect, egui::CornerRadius::same(4), green_bg);
+        }
+        let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0));
+        draw_lucide_icon(ui.painter(), icon_rect, LucideIcon::Check, green);
+        resp.on_hover_text(tip_text(ui.ctx(), "Copied JSON", Some(Action::CopyJson)))
+    } else {
+        icon_button(ui, LucideIcon::Copy, UiColors::current(ui).strong, "Copy Full JSON", Some(Action::CopyJson))
+    }
 }
 
 pub(crate) fn btn_clear(ui: &mut egui::Ui) -> egui::Response {
@@ -87,15 +133,15 @@ pub(crate) fn btn_collapse_all(ui: &mut egui::Ui) -> egui::Response {
     icon_button(ui, LucideIcon::ChevronsDownUp, UiColors::current(ui).strong, "Collapse All", Some(Action::CollapseAll))
 }
 
-/// View/Edit switch: shows the current mode's icon (eye or pencil); a click flips it.
+/// View/Edit switch: when in view mode shows the edit icon (text-pen), when in edit mode shows the view icon (list-tree); a click flips it.
 pub(crate) fn btn_mode(ui: &mut egui::Ui, edit_mode: bool) -> egui::Response {
     let p = UiColors::current(ui);
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 24.0), egui::Sense::click());
     draw_button_bg(ui, rect, &resp);
     let (icon, color, tip) = if edit_mode {
-        (LucideIcon::PencilLine, p.blue, "Edit mode · click to view")
+        (LucideIcon::ListTree, p.blue, "Edit mode · click to view")
     } else {
-        (LucideIcon::Eye, p.blue, "View mode · click to edit")
+        (LucideIcon::TextPen, p.blue, "View mode · click to edit")
     };
     let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0));
     draw_lucide_icon(ui.painter(), icon_rect, icon, color);
@@ -268,6 +314,71 @@ pub(crate) fn modal_button(ui: &mut egui::Ui, label: &str, primary: bool) -> egu
 
 /// macOS-style segmented control. Returns the index clicked this frame, if any.
 pub(crate) fn segmented(ui: &mut egui::Ui, labels: &[&str], selected: usize) -> Option<usize> {
+    segmented_with_badge(ui, labels, selected, None)
+}
+
+/// Full-width macOS-style segmented tab bar for dialogs (e.g. Settings).
+pub(crate) fn settings_tab_bar(
+    ui: &mut egui::Ui,
+    labels: &[&str],
+    selected: usize,
+    badge_index: Option<usize>,
+) -> Option<usize> {
+    let p = UiColors::current(ui);
+    let total_w = ui.available_width();
+    let n = labels.len().max(1);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(total_w, 32.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, egui::CornerRadius::same(9), p.subtle);
+    ui.painter().rect_stroke(rect, egui::CornerRadius::same(9), egui::Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+
+    let seg_w = (total_w - 4.0) / n as f32;
+    let mut clicked = None;
+    let font = egui::FontId::proportional(12.5);
+
+    for (i, label) in labels.iter().enumerate() {
+        let seg_left = rect.left() + 2.0 + i as f32 * seg_w;
+        let seg = egui::Rect::from_min_size(egui::pos2(seg_left, rect.top() + 2.0), egui::vec2(seg_w, rect.height() - 4.0));
+        let resp = ui.interact(seg, ui.id().with(("settings_tab_seg", i)), egui::Sense::click());
+
+        if i == selected {
+            let shadow = egui::epaint::Shadow {
+                offset: [0, 1],
+                blur: 3,
+                spread: 0,
+                color: egui::Color32::from_black_alpha(if ui.visuals().dark_mode { 80 } else { 22 }),
+            };
+            ui.painter().add(shadow.as_shape(seg, egui::CornerRadius::same(7)));
+            ui.painter().rect_filled(seg, egui::CornerRadius::same(7), p.surface);
+        } else if resp.hovered() {
+            ui.painter().rect_filled(seg, egui::CornerRadius::same(7), p.hover.gamma_multiply(0.6));
+        }
+
+        let color = if i == selected { p.strong } else if resp.hovered() { p.text } else { p.muted };
+        let tr_text = tr(ui.ctx(), label);
+        let galley = ui.painter().layout_no_wrap(tr_text.to_owned(), font.clone(), color);
+        ui.painter().galley(seg.center() - galley.size() * 0.5, galley.clone(), color);
+
+        if badge_index == Some(i) {
+            let dot_center = egui::pos2(seg.center().x + galley.size().x * 0.5 + 6.0, seg.center().y - 4.0);
+            ui.painter().circle_filled(dot_center, 3.5, egui::Color32::from_rgb(239, 68, 68));
+            ui.painter().circle_stroke(dot_center, 3.5, egui::Stroke::new(1.2, if i == selected { p.surface } else { p.subtle }));
+        }
+
+        if resp.clicked() {
+            clicked = Some(i);
+        }
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    }
+    clicked
+}
+
+/// macOS-style segmented control with an optional red dot badge on a segment.
+pub(crate) fn segmented_with_badge(
+    ui: &mut egui::Ui,
+    labels: &[&str],
+    selected: usize,
+    badge_index: Option<usize>,
+) -> Option<usize> {
     let p = UiColors::current(ui);
     let font = egui::FontId::proportional(12.5);
     let widths: Vec<f32> = labels
@@ -292,7 +403,16 @@ pub(crate) fn segmented(ui: &mut egui::Ui, labels: &[&str], selected: usize) -> 
             ui.painter().rect_filled(seg, egui::CornerRadius::same(7), p.hover.gamma_multiply(0.6));
         }
         let color = if i == selected { p.strong } else if resp.hovered() { p.text } else { p.muted };
-        ui.painter().text(seg.center(), egui::Align2::CENTER_CENTER, tr(ui.ctx(), label), font.clone(), color);
+        let tr_text = tr(ui.ctx(), label);
+        let galley = ui.painter().layout_no_wrap(tr_text.to_owned(), font.clone(), color);
+        ui.painter().galley(seg.center() - galley.size() * 0.5, galley.clone(), color);
+
+        if badge_index == Some(i) {
+            let dot_center = egui::pos2(seg.center().x + galley.size().x * 0.5 + 5.0, seg.center().y - 4.0);
+            ui.painter().circle_filled(dot_center, 3.5, egui::Color32::from_rgb(239, 68, 68));
+            ui.painter().circle_stroke(dot_center, 3.5, egui::Stroke::new(1.0, p.surface));
+        }
+
         if resp.clicked() {
             clicked = Some(i);
         }

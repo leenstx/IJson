@@ -23,11 +23,12 @@ pub(crate) enum Action {
     CopyMinified,
     Compare,
     Clear,
+    Settings,
 }
 
 impl Action {
     /// Display order in the settings panel.
-    pub(crate) const ALL: [Action; 16] = [
+    pub(crate) const ALL: [Action; 17] = [
         Action::ToggleSidebar,
         Action::NewTab,
         Action::CloseTab,
@@ -44,6 +45,7 @@ impl Action {
         Action::CopyMinified,
         Action::Compare,
         Action::Clear,
+        Action::Settings,
     ];
 
     /// Stable name used in the saved session.
@@ -65,6 +67,7 @@ impl Action {
             Action::CopyMinified => "copy_minified",
             Action::Compare => "compare",
             Action::Clear => "clear",
+            Action::Settings => "settings",
         }
     }
 
@@ -87,6 +90,7 @@ impl Action {
             Action::CopyMinified => "Copy minified JSON",
             Action::Compare => "Compare in new tab",
             Action::Clear => "Clear editor",
+            Action::Settings => "Settings",
         }
     }
 
@@ -112,6 +116,7 @@ impl Action {
             Action::Compare => cmd_shift(Key::D),
             // Destructive, so not bound unless the user asks for it.
             Action::Clear => None,
+            Action::Settings => cmd(Key::Comma),
         }
     }
 }
@@ -432,5 +437,18 @@ mod tests {
         let b = Shortcut::from_event(egui::Key::Plus, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT);
         assert_eq!(a, b);
         assert_eq!(Some(a), Action::ExpandAll.default_shortcut());
+    }
+
+    #[test]
+    fn settings_shortcut_defaults_to_command_comma() {
+        let keymap = Keymap::default();
+        let sc = keymap.get(Action::Settings).expect("Settings default shortcut");
+        assert!(sc.cmd);
+        assert!(!sc.shift && !sc.alt && !sc.ctrl);
+        assert_eq!(sc.key, egui::Key::Comma);
+        if cfg!(target_os = "macos") {
+            assert_eq!(sc.label(), "⌘,");
+            assert_eq!(sc.keys(), vec!["⌘", ","]);
+        }
     }
 }

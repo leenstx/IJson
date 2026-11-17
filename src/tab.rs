@@ -105,6 +105,8 @@ pub(crate) struct JsonTab {
     pub(crate) copy_notice_in_node: bool,
     pub(crate) request_loading: Option<RequestLoadingState>,
     pub(crate) copy_notice: Option<(String, std::time::Instant)>,
+    pub(crate) copied_full_at: Option<std::time::Instant>,
+    pub(crate) copied_minified_at: Option<std::time::Instant>,
 
     undo_past: Vec<String>,
     undo_future: Vec<String>,
@@ -169,6 +171,8 @@ impl JsonTab {
             copy_notice_in_node: false,
             request_loading: None,
             copy_notice: None,
+            copied_full_at: None,
+            copied_minified_at: None,
             undo_past: Vec::new(),
             undo_future: Vec::new(),
             undo_pending: None,
