@@ -12,7 +12,7 @@ use crate::fonts::AppFonts;
 use crate::highlight::highlight_json;
 use crate::icons::{draw_lucide_icon, LucideIcon};
 use crate::model::{
-    collect_all_expandable_paths, is_request_candidate, value_at_path, try_request_json, try_unescape_json,
+    collapse_beyond_depth, collect_all_expandable_paths, is_request_candidate, value_at_path, try_request_json, try_unescape_json,
     Indentation, ParseError, SortMode, TreeAction, ValueTypeTag,
 };
 use crate::tab::{
@@ -22,7 +22,7 @@ use crate::tab::{
 use crate::i18n::{tr, Language};
 use crate::keymap::{record_key, tip_with_shortcut, Action, Keymap, Recorded};
 use crate::theme::{ThemeColors, ThemeMode, UiColors};
-use crate::tree::render_tree_node;
+use crate::tree::{render_tree_node, TreeLabel};
 use crate::updater::{Updater, UpdateStatus, CURRENT_VERSION};
 use crate::widgets::{
     btn_clear, mini_icon_button, btn_mode, toolbar_separator, btn_collapse_all, btn_compare, btn_compress, btn_copy, btn_expand_all, btn_format,
@@ -2715,8 +2715,7 @@ impl JsonTab {
         }
     }
 
-    /// View mode's right panel: a tree rooted at the node selected on the left,
-    /// or just the value when a plain value (string, number, bool, null) is selected.
+    /// Shows the selected subtree using JSON syntax, with folding for containers.
     fn render_node_card(&mut self, ui: &mut egui::Ui, card_rect: egui::Rect, colors: ThemeColors) {
         let p = colors.ui;
         ui.set_clip_rect(ui.clip_rect().intersect(card_rect));
@@ -2754,53 +2753,65 @@ impl JsonTab {
                     return;
                 };
                 let Some(path) = self.selected_path.clone() else {
+                    self.node_root_path = None;
                     self.parsed = Some(parsed);
                     hint(ui, "Select a node on the left to view it here");
                     return;
                 };
                 let Some(value) = value_at_path(&parsed, &path) else {
+                    self.node_root_path = None;
                     self.parsed = Some(parsed);
                     hint(ui, "This node no longer exists");
                     return;
                 };
 
+                let root_changed = self.node_root_path.as_deref() != Some(&path);
+                if root_changed {
+                    self.node_root_path = Some(path.clone());
+                    self.node_collapsed.clear();
+                    collapse_beyond_depth(value, &path, 0, 2, &mut self.node_collapsed);
+                    self.node_scroll_x = 0.0;
+                    self.node_content_width = 0.0;
+                    self.node_selected_path = None;
+                }
+
                 if !(value.is_object() || value.is_array()) {
-                    let (text, color) = match value {
-                        Value::String(s) => (s.clone(), colors.string),
-                        Value::Number(n) => (n.to_string(), colors.number),
-                        Value::Bool(b) => (b.to_string(), colors.boolean),
-                        _ => ("null".to_string(), colors.null),
+                    let color = match value {
+                        Value::String(_) => colors.string,
+                        Value::Number(_) => colors.number,
+                        Value::Bool(_) => colors.boolean,
+                        _ => colors.null,
                     };
+                    let text = value.to_string();
                     self.parsed = Some(parsed);
-                    egui::ScrollArea::vertical()
+                    let mut scroll = egui::ScrollArea::vertical()
                         .id_salt(("node_value_scroll", self.id))
                         .drag_to_scroll(false)
                         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                        .auto_shrink([false; 2])
-                        .show(ui, |ui| {
-                            // Puts the first line level with the first row of the tree on the left.
-                            ui.add_space(4.5);
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(text)
-                                        .font(egui::FontId::monospace(13.0))
-                                        .line_height(Some(19.5))
-                                        .color(color),
-                                )
-                                .wrap()
-                                .selectable(true),
-                            );
-                        });
+                        .auto_shrink([false; 2]);
+                    if root_changed {
+                        scroll = scroll.vertical_scroll_offset(0.0);
+                    }
+                    scroll.show(ui, |ui| {
+                        // Align the first line with the first row of the left tree.
+                        ui.add_space(4.5);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(text)
+                                    .font(egui::FontId::monospace(13.0))
+                                    .line_height(Some(19.5))
+                                    .color(color),
+                            )
+                            .wrap()
+                            .selectable(true),
+                        );
+                    });
                     if self.copy_notice_in_node {
                         self.draw_copy_notice(ui, card_rect, p);
                     }
                     return;
                 }
 
-                // Root row label: the last key or index of the path.
-                let key_label = path
-                    .rfind(|c| c == '.' || c == '[')
-                    .map(|pos| path[pos..].trim_start_matches('.').to_string());
                 let (action, _) = show_tree_pane(
                     ui,
                     card_rect,
@@ -2810,7 +2821,6 @@ impl JsonTab {
                         id: self.id,
                         root: value,
                         root_path: &path,
-                        root_label: key_label.as_deref(),
                         collapsed: &mut self.node_collapsed,
                         scroll_x: &mut self.node_scroll_x,
                         content_width: &mut self.node_content_width,
@@ -2820,6 +2830,8 @@ impl JsonTab {
                         selected_path: self.node_selected_path.as_deref(),
                         indent_step: self.indentation.tree_indent_step(),
                         reveal_match: false,
+                        plain_json: true,
+                        reset_scroll: root_changed,
                     },
                 );
                 self.parsed = Some(parsed);
@@ -3791,10 +3803,61 @@ impl JsonTab {
                         first..end.max(first)
                     };
 
+                    let number_galley = |ui: &egui::Ui, n: usize| {
+                        let mut job = egui::text::LayoutJob::single_section(
+                            format!("{:>width$}", n, width = digits),
+                            egui::TextFormat {
+                                font_id: font_id.clone(),
+                                color: p.muted,
+                                line_height: Some(line_height_val),
+                                ..Default::default()
+                            },
+                        );
+                        job.wrap.max_width = f32::INFINITY;
+                        ui.painter().layout_job(job)
+                    };
+                    // Every number is padded to the same width, so one sample sizes the column.
+                    let numbers_w = number_galley(ui, 1).size().x;
+                    let gutter_h = visible_lines as f32 * line_height_val;
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(gutter_width, gutter_h),
+                        egui::Layout::top_down(egui::Align::RIGHT),
+                        |ui| {
+                            let (rect, _) = ui.allocate_exact_size(
+                                egui::vec2(numbers_w, gutter_h),
+                                egui::Sense::hover(),
+                            );
+                            for row in visible_rows(rect.top()) {
+                                let line = self.editor_map[row];
+                                let is_err_line = self.parse_error.as_ref().map_or(false, |e| e.line == line.source_start + 1 && !self.input.trim().is_empty());
+                                let galley = if is_err_line {
+                                    let mut job = egui::text::LayoutJob::single_section(
+                                        format!("{:>width$}", line.source_start + 1, width = digits),
+                                        egui::TextFormat {
+                                            font_id: font_id.clone(),
+                                            color: p.danger,
+                                            line_height: Some(line_height_val),
+                                            ..Default::default()
+                                        },
+                                    );
+                                    job.wrap.max_width = f32::INFINITY;
+                                    ui.painter().layout_job(job)
+                                } else {
+                                    number_galley(ui, line.source_start + 1)
+                                };
+                                let pos = egui::pos2(
+                                    rect.right() - galley.size().x,
+                                    rect.top() + row as f32 * line_height_val,
+                                );
+                                let color = if is_err_line { p.danger } else { p.muted };
+                                ui.painter().galley(pos, galley, color);
+                            }
+                        },
+                    );
+
                     let mut clicked_fold = None;
-                    let fold_h = visible_lines as f32 * line_height_val;
                     let (fold_rect, _) =
-                        ui.allocate_exact_size(egui::vec2(fold_w, fold_h), egui::Sense::hover());
+                        ui.allocate_exact_size(egui::vec2(fold_w, gutter_h), egui::Sense::hover());
                     for row in visible_rows(fold_rect.top()) {
                         let start = self.editor_map[row].source_start;
                         if !self.editor_fold_starts.contains(&start) {
@@ -3826,61 +3889,6 @@ impl JsonTab {
                     if let Some(start) = clicked_fold {
                         self.toggle_editor_fold(start);
                     }
-
-                    let number_galley = |ui: &egui::Ui, n: usize| {
-                        let mut job = egui::text::LayoutJob::single_section(
-                            format!("{:>width$}", n, width = digits),
-                            egui::TextFormat {
-                                font_id: font_id.clone(),
-                                color: p.muted,
-                                line_height: Some(line_height_val),
-                                ..Default::default()
-                            },
-                        );
-                        job.wrap.max_width = f32::INFINITY;
-                        ui.painter().layout_job(job)
-                    };
-                    // Every number is padded to the same width, so one sample sizes the column.
-                    let numbers_w = number_galley(ui, 1).size().x;
-                    let gutter_h = visible_lines as f32 * line_height_val;
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(gutter_width, gutter_h),
-                        egui::Layout::top_down(egui::Align::RIGHT),
-                        |ui| {
-                            let (rect, _) = ui.allocate_exact_size(
-                                egui::vec2(numbers_w, gutter_h),
-                                egui::Sense::hover(),
-                            );
-                            for row in visible_rows(rect.top()) {
-                                // A fold toggled above can shorten the map this frame.
-                                let Some(line) = self.editor_map.get(row) else {
-                                    break;
-                                };
-                                let is_err_line = self.parse_error.as_ref().map_or(false, |e| e.line == line.source_start + 1 && !self.input.trim().is_empty());
-                                let galley = if is_err_line {
-                                    let mut job = egui::text::LayoutJob::single_section(
-                                        format!("{:>width$}", line.source_start + 1, width = digits),
-                                        egui::TextFormat {
-                                            font_id: font_id.clone(),
-                                            color: p.danger,
-                                            line_height: Some(line_height_val),
-                                            ..Default::default()
-                                        },
-                                    );
-                                    job.wrap.max_width = f32::INFINITY;
-                                    ui.painter().layout_job(job)
-                                } else {
-                                    number_galley(ui, line.source_start + 1)
-                                };
-                                let pos = egui::pos2(
-                                    rect.right() - galley.size().x,
-                                    rect.top() + row as f32 * line_height_val,
-                                );
-                                let color = if is_err_line { p.danger } else { p.muted };
-                                ui.painter().galley(pos, galley, color);
-                            }
-                        },
-                    );
 
                     let sep_x = ui.cursor().min.x - 1.0;
                     let sep_h = (visible_lines as f32 * line_height_val).max(card_rect.height());
@@ -4492,7 +4500,6 @@ impl JsonViewerApp {
                     id: tab.id,
                     root: &parsed,
                     root_path: "$",
-                    root_label: None,
                     collapsed: &mut tab.collapsed,
                     scroll_x: &mut tab.tree_scroll_x,
                     content_width: &mut tab.tree_content_width,
@@ -4502,6 +4509,8 @@ impl JsonViewerApp {
                     selected_path: selected_path.as_deref(),
                     indent_step: tab.indentation.tree_indent_step(),
                     reveal_match,
+                    plain_json: false,
+                    reset_scroll: false,
                 },
             );
             if revealed {
@@ -4685,7 +4694,6 @@ struct TreePane<'a> {
     id: u64,
     root: &'a Value,
     root_path: &'a str,
-    root_label: Option<&'a str>,
     collapsed: &'a mut HashSet<String>,
     scroll_x: &'a mut f32,
     content_width: &'a mut f32,
@@ -4695,6 +4703,8 @@ struct TreePane<'a> {
     selected_path: Option<&'a str>,
     indent_step: f32,
     reveal_match: bool,
+    plain_json: bool,
+    reset_scroll: bool,
 }
 
 /// Draws a tree with vertical scrolling and a custom horizontal scrollbar.
@@ -4784,51 +4794,56 @@ fn show_tree_pane(
         let mut max_row_w = 0.0f32;
         let mut current_match_rect = None;
 
-        egui::ScrollArea::vertical()
+        let mut scroll = egui::ScrollArea::vertical()
             .id_salt((pane.salt, "vert", pane.id))
             .drag_to_scroll(false)
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
             .auto_shrink([false; 2])
-            .max_height(sa_h)
-            .show(ui, |ui| {
-                let horiz_offset = *pane.scroll_x;
-                egui::ScrollArea::horizontal()
-                    .id_salt((pane.salt, "horiz", pane.id))
-                    .horizontal_scroll_offset(horiz_offset)
-                    .drag_to_scroll(false)
-                    .enable_scrolling(false)
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        if text_exceeds_width {
-                            ui.set_min_width(scroll_content_w);
-                        }
-                        render_tree_node(
-                            ui,
-                            pane.root,
-                            pane.root_path,
-                            pane.root_label,
-                            0,
-                            pane.collapsed,
-                            pane.search_query,
-                            pane.search_matches,
-                            pane.cur_match_path,
-                            pane.selected_path,
-                            colors,
-                            pane.indent_step,
-                            &mut action,
-                            &mut max_row_w,
-                            &mut current_match_rect,
-                        );
-                    });
-                // Issue the request outside the horizontal area so the vertical area handles it.
-                if pane.reveal_match {
-                    if let Some(rect) = current_match_rect {
-                        ui.scroll_to_rect(rect, Some(egui::Align::Center));
-                        revealed = true;
+            .max_height(sa_h);
+        if pane.reset_scroll {
+            scroll = scroll.vertical_scroll_offset(0.0);
+        }
+        scroll.show(ui, |ui| {
+            let horiz_offset = *pane.scroll_x;
+            egui::ScrollArea::horizontal()
+                .id_salt((pane.salt, "horiz", pane.id))
+                .horizontal_scroll_offset(horiz_offset)
+                .drag_to_scroll(false)
+                .enable_scrolling(false)
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    if text_exceeds_width {
+                        ui.set_min_width(scroll_content_w);
                     }
+                    render_tree_node(
+                        ui,
+                        pane.root,
+                        pane.root_path,
+                        TreeLabel::Root,
+                        0,
+                        pane.collapsed,
+                        pane.search_query,
+                        pane.search_matches,
+                        pane.cur_match_path,
+                        pane.selected_path,
+                        colors,
+                        pane.indent_step,
+                        pane.plain_json,
+                        false,
+                        &mut action,
+                        &mut max_row_w,
+                        &mut current_match_rect,
+                    );
+                });
+            // Issue the request outside the horizontal area so the vertical area handles it.
+            if pane.reveal_match {
+                if let Some(rect) = current_match_rect {
+                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                    revealed = true;
                 }
-            });
+            }
+        });
 
         *pane.content_width = max_row_w;
 
@@ -4931,7 +4946,8 @@ fn find_double_click_selection(text: &str, click_char_idx: usize) -> (usize, usi
     let mut line_end_byte_idx = text.len();
 
     for (b_idx, c) in text.char_indices() {
-        if current_char_idx <= click_char_idx && c == '\n' {
+        // A cursor at the newline still belongs to the line before it.
+        if current_char_idx < click_char_idx && c == '\n' {
             line_start_char_idx = current_char_idx + 1;
             line_start_byte_idx = b_idx + 1;
         }

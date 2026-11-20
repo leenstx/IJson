@@ -932,5 +932,30 @@ mod tests {
         let json_8 = to_pretty_json(&val, Indentation::Eight).unwrap();
         assert_eq!(json_8, "{\n        \"key\": \"value\"\n}");
     }
+
+    #[test]
+    fn test_collapse_beyond_depth_for_node_card() {
+        let val = serde_json::json!({
+            "name": "Alice",
+            "profile": {
+                "bio": "coder",
+                "address": {
+                    "city": "Paris"
+                }
+            },
+            "tags": ["rust", "json"]
+        });
+
+        let mut collapsed = HashSet::new();
+        collapse_beyond_depth(&val, "$.user", 0, 2, &mut collapsed);
+
+        // Root is depth 0 -> NOT collapsed (expanded)
+        assert!(!collapsed.contains("$.user"));
+        // First child level nodes are depth 1 -> NOT collapsed (expanded by default)
+        assert!(!collapsed.contains("$.user.profile"));
+        assert!(!collapsed.contains("$.user.tags"));
+        // Second child level nodes (and beyond) are depth 2+ -> COLLAPSED
+        assert!(collapsed.contains("$.user.profile.address"));
+    }
 }
 

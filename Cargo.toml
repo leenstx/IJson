@@ -1,6 +1,6 @@
 [package]
 name = "json-viewer"
-version = "0.0.15"
+version = "0.0.16"
 edition = "2021"
 description = "A macOS JSON viewer with format, sort, edit, expand/collapse, and compress features"
 

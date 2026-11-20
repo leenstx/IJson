@@ -97,6 +97,7 @@ pub(crate) struct JsonTab {
     pub(crate) edit_mode: bool,
     pub(crate) indentation: Indentation,
     /// Right-hand tree in View mode: its own fold state and highlighted row.
+    pub(crate) node_root_path: Option<String>,
     pub(crate) node_collapsed: HashSet<String>,
     pub(crate) node_selected_path: Option<String>,
     pub(crate) node_scroll_x: f32,
@@ -164,6 +165,7 @@ impl JsonTab {
             editor_galley_cache: None,
             edit_mode: false,
             indentation,
+            node_root_path: None,
             node_collapsed: HashSet::new(),
             node_selected_path: None,
             node_scroll_x: 0.0,
@@ -319,6 +321,8 @@ impl JsonTab {
             self.parse_error = None;
             if reset_collapse {
                 self.collapsed.clear();
+                self.node_root_path = None;
+                self.node_collapsed.clear();
             }
             self.rebuild_editor_view();
             return;
@@ -329,6 +333,8 @@ impl JsonTab {
                 self.parsed = Some(v);
                 self.parse_error = None;
                 if reset_collapse {
+                    self.node_root_path = None;
+                    self.node_collapsed.clear();
                     // Expand everything when the whole tree fits on screen;
                     // otherwise open it to the current level.
                     let fit = if self.tree_fit_rows > 0 { self.tree_fit_rows } else { 39 };
@@ -352,6 +358,8 @@ impl JsonTab {
                     column: e.column(),
                 });
                 self.parsed = None;
+                self.node_root_path = None;
+                self.node_collapsed.clear();
             }
         }
         self.rebuild_editor_view();
