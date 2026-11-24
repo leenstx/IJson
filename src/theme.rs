@@ -95,33 +95,33 @@ impl UiColors {
         let rgb = egui::Color32::from_rgb;
         if dark {
             Self {
-                titlebar: rgb(23, 29, 41),
-                canvas: rgb(17, 21, 29), surface: rgb(27, 33, 48),
-                sidebar: rgb(17, 21, 29), subtle: rgb(35, 44, 61),
-                hover: rgb(48, 61, 82), pressed: rgb(64, 81, 107),
-                border: rgb(52, 65, 86), text: rgb(226, 232, 240),
-                strong: rgb(241, 245, 249), muted: rgb(168, 182, 204),
-                faint: rgb(116, 132, 158), disabled: rgb(77, 90, 112),
-                blue: rgb(121, 184, 255), blue_bg: rgb(35, 60, 97),
-                blue_border: rgb(66, 109, 158), primary: rgb(39, 103, 169),
-                purple: rgb(183, 148, 255), amber: rgb(246, 193, 107),
-                danger: rgb(255, 146, 146), danger_bg: rgb(75, 38, 49),
-                danger_border: rgb(143, 70, 87), added: rgb(30, 61, 50),
+                titlebar: rgb(20, 21, 23),
+                canvas: rgb(20, 21, 23), surface: rgb(30, 31, 34),
+                sidebar: rgb(20, 21, 23), subtle: rgb(38, 40, 45),
+                hover: rgb(48, 50, 56), pressed: rgb(62, 65, 73),
+                border: rgb(48, 50, 56), text: rgb(228, 229, 233),
+                strong: rgb(245, 246, 248), muted: rgb(154, 158, 168),
+                faint: rgb(108, 112, 122), disabled: rgb(76, 79, 88),
+                blue: rgb(108, 178, 255), blue_bg: rgb(28, 48, 76),
+                blue_border: rgb(56, 98, 152), primary: rgb(37, 99, 235),
+                purple: rgb(183, 148, 255), amber: rgb(245, 189, 98),
+                danger: rgb(248, 113, 113), danger_bg: rgb(68, 30, 34),
+                danger_border: rgb(138, 58, 66), added: rgb(26, 56, 42),
             }
         } else {
             Self {
-                titlebar: rgb(236, 238, 242),
-                canvas: rgb(236, 238, 242), surface: egui::Color32::WHITE,
-                sidebar: rgb(236, 238, 242), subtle: rgb(241, 245, 249),
-                hover: rgb(226, 232, 240), pressed: rgb(203, 213, 225),
-                border: rgb(226, 232, 240), text: rgb(30, 41, 59),
-                strong: rgb(15, 23, 42), muted: rgb(100, 116, 139),
-                faint: rgb(148, 163, 184), disabled: rgb(203, 213, 225),
-                blue: rgb(9, 105, 218), blue_bg: rgb(219, 234, 254),
-                blue_border: rgb(147, 197, 253), primary: rgb(15, 108, 189),
+                titlebar: rgb(243, 244, 246),
+                canvas: rgb(243, 244, 246), surface: egui::Color32::WHITE,
+                sidebar: rgb(243, 244, 246), subtle: rgb(246, 247, 249),
+                hover: rgb(232, 234, 239), pressed: rgb(214, 218, 226),
+                border: rgb(225, 228, 233), text: rgb(31, 35, 40),
+                strong: rgb(17, 20, 24), muted: rgb(101, 109, 118),
+                faint: rgb(140, 149, 159), disabled: rgb(200, 206, 214),
+                blue: rgb(9, 105, 218), blue_bg: rgb(221, 240, 255),
+                blue_border: rgb(147, 197, 253), primary: rgb(9, 105, 218),
                 purple: rgb(124, 58, 237), amber: rgb(180, 83, 9),
-                danger: rgb(185, 28, 28), danger_bg: rgb(254, 226, 226),
-                danger_border: rgb(252, 165, 165), added: rgb(220, 252, 231),
+                danger: rgb(207, 34, 46), danger_bg: rgb(255, 235, 233),
+                danger_border: rgb(252, 165, 165), added: rgb(218, 251, 225),
             }
         }
     }
@@ -174,31 +174,23 @@ pub(crate) fn setup_theme(ctx: &egui::Context) {
         off_duration: 0.45,
     };
 
-    // Popups, menus, tooltips and dialogs match the floating cards:
-    // a hairline outline and a wide, soft shadow.
+    // Popups, menus, tooltips and dialogs use clean solid surfaces with a crisp border.
     let dark = theme == egui::Theme::Dark;
     visuals.window_fill = p.surface;
-    visuals.window_stroke = egui::Stroke::new(
-        if dark { 1.0 } else { 0.5 },
-        if dark {
-            egui::Color32::from_white_alpha(24)
-        } else {
-            egui::Color32::from_rgba_unmultiplied(15, 23, 42, 36)
-        },
-    );
-    visuals.window_corner_radius = egui::CornerRadius::same(14);
-    visuals.menu_corner_radius = egui::CornerRadius::same(12);
+    visuals.window_stroke = egui::Stroke::new(1.0, p.border);
+    visuals.window_corner_radius = egui::CornerRadius::same(12);
+    visuals.menu_corner_radius = egui::CornerRadius::same(10);
     visuals.popup_shadow = egui::epaint::Shadow {
-        offset: [0, 8],
-        blur: 28,
+        offset: [0, 4],
+        blur: 16,
         spread: 0,
-        color: egui::Color32::from_black_alpha(if dark { 110 } else { 26 }),
+        color: egui::Color32::from_black_alpha(if dark { 90 } else { 18 }),
     };
     visuals.window_shadow = egui::epaint::Shadow {
-        offset: [0, 18],
-        blur: 44,
+        offset: [0, 10],
+        blur: 28,
         spread: 0,
-        color: egui::Color32::from_black_alpha(if dark { 140 } else { 34 }),
+        color: egui::Color32::from_black_alpha(if dark { 110 } else { 24 }),
     };
 
     ctx.set_visuals_of(theme, visuals);
@@ -253,16 +245,16 @@ impl ThemeColors {
     pub(crate) fn current(ctx: &egui::Context) -> Self {
         if ctx.theme() == egui::Theme::Dark {
             Self {
-                key: egui::Color32::from_rgb(121, 184, 255),
-                string: egui::Color32::from_rgb(134, 219, 165),
-                number: egui::Color32::from_rgb(255, 184, 108),
-                boolean: egui::Color32::from_rgb(255, 146, 146),
-                null: egui::Color32::from_rgb(168, 182, 204),
-                colon: egui::Color32::from_rgb(116, 132, 158),
-                punctuation: egui::Color32::from_rgb(148, 163, 184),
-                text: egui::Color32::from_rgb(226, 232, 240),
-                fold_chip_bg: egui::Color32::from_rgb(48, 61, 82),
-                fold_chip_fg: egui::Color32::from_rgb(203, 213, 225),
+                key: egui::Color32::from_rgb(199, 125, 187),     // Orchid (#C77DBB)
+                string: egui::Color32::from_rgb(106, 171, 115),  // Sage Green (#6AAB73)
+                number: egui::Color32::from_rgb(42, 172, 184),   // Teal (#2AACB8)
+                boolean: egui::Color32::from_rgb(207, 142, 109), // Copper (#CF8E6D)
+                null: egui::Color32::from_rgb(157, 160, 168),    // Muted Gray (#9DA0A8)
+                colon: egui::Color32::from_rgb(122, 126, 133),
+                punctuation: egui::Color32::from_rgb(188, 190, 196), // IDEA Dark (#BCBEC4)
+                text: egui::Color32::from_rgb(228, 229, 233),
+                fold_chip_bg: egui::Color32::from_rgb(48, 50, 56),
+                fold_chip_fg: egui::Color32::from_rgb(198, 201, 210),
                 badge_obj_bg: egui::Color32::from_rgb(48, 36, 75),
                 badge_obj_fg: egui::Color32::from_rgb(183, 148, 255),
                 badge_obj_stroke: egui::Color32::from_rgb(91, 67, 132),
@@ -271,9 +263,9 @@ impl ThemeColors {
                 badge_arr_stroke: egui::Color32::from_rgb(40, 92, 108),
                 match_highlight: egui::Color32::from_rgb(84, 68, 27),
                 match_current: egui::Color32::from_rgb(118, 88, 28),
-                row_hover: egui::Color32::from_white_alpha(12),
-                row_selected: egui::Color32::from_rgb(35, 60, 97),
-                indent_guide: egui::Color32::from_rgb(52, 65, 86),
+                row_hover: egui::Color32::from_white_alpha(10),
+                row_selected: egui::Color32::from_rgb(32, 52, 82),
+                indent_guide: egui::Color32::from_rgb(46, 48, 54),
                 ui: UiColors::new(true),
             }
         } else {
@@ -283,16 +275,16 @@ impl ThemeColors {
 
     fn light() -> Self {
         Self {
-            key: egui::Color32::from_rgb(9, 105, 218), // macOS/GitHub Deep Blue
-            string: egui::Color32::from_rgb(21, 128, 61), // Forest Green
-            number: egui::Color32::from_rgb(194, 65, 12), // Amber Orange
-            boolean: egui::Color32::from_rgb(185, 28, 28), // Crimson Red
-            null: egui::Color32::from_rgb(100, 116, 139), // Slate Gray
-            colon: egui::Color32::from_rgb(148, 163, 184), // Light Muted Gray
-            punctuation: egui::Color32::from_rgb(71, 85, 105),
-            text: egui::Color32::from_rgb(30, 41, 59),
-            fold_chip_bg: egui::Color32::from_rgb(226, 232, 240),
-            fold_chip_fg: egui::Color32::from_rgb(71, 85, 105),
+            key: egui::Color32::from_rgb(135, 16, 148),    // Plum (#871094)
+            string: egui::Color32::from_rgb(6, 125, 23),   // Deep Green (#067D17)
+            number: egui::Color32::from_rgb(23, 80, 235),  // Crisp Blue (#1750EB)
+            boolean: egui::Color32::from_rgb(0, 51, 179),  // Navy (#0033B3)
+            null: egui::Color32::from_rgb(108, 112, 126),  // Neutral Gray (#6C707E)
+            colon: egui::Color32::from_rgb(140, 145, 158), // Muted Gray
+            punctuation: egui::Color32::from_rgb(8, 8, 8), // IDEA Light (#080808)
+            text: egui::Color32::from_rgb(31, 35, 40),
+            fold_chip_bg: egui::Color32::from_rgb(232, 234, 239),
+            fold_chip_fg: egui::Color32::from_rgb(87, 96, 106),
             badge_obj_bg: egui::Color32::from_rgb(245, 243, 255), // Lavender Pill
             badge_obj_fg: egui::Color32::from_rgb(124, 58, 237),
             badge_obj_stroke: egui::Color32::from_rgb(221, 214, 254),
@@ -301,9 +293,9 @@ impl ThemeColors {
             badge_arr_stroke: egui::Color32::from_rgb(186, 230, 253),
             match_highlight: egui::Color32::from_rgba_premultiplied(254, 240, 138, 160),
             match_current: egui::Color32::from_rgba_premultiplied(253, 224, 71, 240),
-            row_hover: egui::Color32::from_rgba_premultiplied(0, 0, 0, 10),
-            row_selected: egui::Color32::from_rgba_premultiplied(15, 108, 189, 28),
-            indent_guide: egui::Color32::from_rgb(226, 232, 240),
+            row_hover: egui::Color32::from_rgba_premultiplied(0, 0, 0, 8),
+            row_selected: egui::Color32::from_rgb(232, 243, 255),
+            indent_guide: egui::Color32::from_rgb(232, 235, 240),
             ui: UiColors::new(false),
         }
     }

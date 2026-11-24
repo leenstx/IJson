@@ -16,13 +16,13 @@ use crate::model::{
     Indentation, ParseError, SortMode, TreeAction, ValueTypeTag,
 };
 use crate::tab::{
-    local_stamp_now, stamp_from_system_time, tab_from_value, unique_tab_name, EditorGalleyCache, JsonTab,
-    TAB_RAIL_WIDTH,
+    local_stamp_now, next_day_tab_name, stamp_from_system_time, tab_from_value, unique_tab_name,
+    EditorGalleyCache, JsonTab, TAB_RAIL_WIDTH,
 };
 use crate::i18n::{tr, Language};
 use crate::keymap::{record_key, tip_with_shortcut, Action, Keymap, Recorded};
 use crate::theme::{ThemeColors, ThemeMode, UiColors};
-use crate::tree::{render_tree_node, TreeLabel};
+use crate::tree::{render_tree_node, TreeLabel, TREE_ROW_HEIGHT};
 use crate::updater::{Updater, UpdateStatus, CURRENT_VERSION};
 use crate::widgets::{
     btn_clear, mini_icon_button, btn_mode, toolbar_separator, btn_collapse_all, btn_compare, btn_compress, btn_copy, btn_expand_all, btn_format,
@@ -371,7 +371,7 @@ impl JsonViewerApp {
         let previous = self.tabs[self.active].id;
         self.surrender_focus(ctx, previous);
         let id = self.alloc_id();
-        let name = unique_tab_name(&self.tabs, &local_stamp_now());
+        let name = next_day_tab_name(&self.tabs);
         let mut tab = JsonTab::empty(id, name, self.indentation);
 
         let clipboard_text = arboard::Clipboard::new()
@@ -1793,20 +1793,11 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
             .fixed_size(egui::vec2(width, window_height))
             .frame(
                 egui::Frame::window(&ctx.style())
-                    .fill(if dark { p.canvas } else { egui::Color32::from_rgb(243, 243, 245) })
+                    .fill(p.canvas)
                     .inner_margin(egui::Margin::symmetric(18, 16)),
             )
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                if let Some(rect) = ui.ctx().memory(|m| m.area_rect(egui::Id::new("settings_panel"))) {
-                    paint_glow_rect(
-                        ui.ctx(),
-                        ui.painter(),
-                        rect.shrink(1.0),
-                        egui::CornerRadius::same(13),
-                        Glow::Backdrop,
-                    );
-                }
                 ui.set_width(ui.available_width());
                 ui.spacing_mut().item_spacing.y = 0.0;
 
@@ -1925,13 +1916,11 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
         }
         self.open_dropped_files(ctx);
 
-        // Window-wide glow behind the (transparent) panels.
-        paint_glow_rect(
-            ctx,
-            &ctx.layer_painter(egui::LayerId::background()),
+        // Solid neutral canvas behind the sidebar and cards.
+        ctx.layer_painter(egui::LayerId::background()).rect_filled(
             ctx.screen_rect(),
             egui::CornerRadius::ZERO,
-            Glow::Backdrop,
+            colors.ui.canvas,
         );
         // Slide the sidebar in and out instead of snapping.
         let sidebar_t = ctx.animate_bool_with_time_and_easing(
@@ -1952,14 +1941,14 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
                 let full = ui.available_rect_before_wrap();
                 let p = colors.ui;
                 let side_gap = snap_to_pixels(ctx, 8.0 - 4.0 * sidebar_t);
-                let bar_rect = egui::Rect::from_min_max(
-                    egui::pos2(full.left() + side_gap, full.top()),
-                    egui::pos2(full.right() - 6.0, full.top() + TOP_ROW_H),
-                );
                 // Whole-point edges keep both cards' borders equally crisp and level.
                 let cards_rect = egui::Rect::from_min_max(
                     egui::pos2((full.left() + side_gap).round(), (full.top() + TOP_ROW_H + 6.0).round()),
                     egui::pos2((full.right() - 8.0).round(), (full.bottom() - 8.0).round()),
+                );
+                let bar_rect = egui::Rect::from_min_max(
+                    egui::pos2(full.left() + side_gap, full.top()),
+                    egui::pos2(cards_rect.right(), full.top() + TOP_ROW_H),
                 );
 
                 let mut tb = ui.new_child(
@@ -4427,8 +4416,7 @@ impl JsonViewerApp {
             .inner_margin(egui::Margin::symmetric(4, 0));
 
         // Remember how many tree rows fit, to decide how far a new paste expands.
-        let row_pitch = 25.0 + ui.spacing().item_spacing.y;
-        self.tree_fit_rows = ((card_rect.height() / row_pitch).floor() as usize).max(1);
+        self.tree_fit_rows = ((card_rect.height() / TREE_ROW_HEIGHT).floor() as usize).max(1);
 
         card_frame.show(ui, |ui| {
             if let Some(err) = &self.parse_error {
@@ -4794,6 +4782,17 @@ fn show_tree_pane(
         let mut max_row_w = 0.0f32;
         let mut current_match_rect = None;
 
+        // IDEA-style fold gutter: reveal expanded fold arrows only while hovering
+        // the panel's left edge; collapsed nodes always keep their arrow visible.
+        let gutter_rect = egui::Rect::from_min_max(
+            card_rect.min,
+            egui::pos2(
+                (card_rect.left() + 4.0 + crate::tree::GUTTER_W + 4.0).min(card_rect.right()),
+                card_rect.bottom(),
+            ),
+        );
+        let gutter_hovered = ui.rect_contains_pointer(gutter_rect);
+
         let mut scroll = egui::ScrollArea::vertical()
             .id_salt((pane.salt, "vert", pane.id))
             .drag_to_scroll(false)
@@ -4813,6 +4812,7 @@ fn show_tree_pane(
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
                     if text_exceeds_width {
                         ui.set_min_width(scroll_content_w);
                     }
@@ -4830,6 +4830,7 @@ fn show_tree_pane(
                         colors,
                         pane.indent_step,
                         pane.plain_json,
+                        gutter_hovered,
                         false,
                         &mut action,
                         &mut max_row_w,
@@ -5095,7 +5096,17 @@ fn tab_row(
 
     let show_actions = active || resp.hovered();
     let icon = 14.0;
-    let text_left = rect.left() + 12.0;
+    let mut text_left = rect.left() + 12.0;
+    if comparison {
+        let cmp_icon_size = 13.0;
+        let cmp_rect = egui::Rect::from_center_size(
+            egui::pos2(text_left + cmp_icon_size * 0.5, rect.center().y),
+            egui::vec2(cmp_icon_size, cmp_icon_size),
+        );
+        let cmp_color = if active { p.strong } else { p.muted };
+        draw_lucide_icon(ui.painter(), cmp_rect, LucideIcon::Columns2, cmp_color);
+        text_left += cmp_icon_size + 6.0;
+    }
     let pointer = resp.hover_pos().or(resp.interact_pointer_pos());
     let close_rect = egui::Rect::from_center_size(
         egui::pos2(rect.right() - 8.0 - icon * 0.5, rect.center().y),
@@ -5116,9 +5127,7 @@ fn tab_row(
         egui::pos2(text_left, rect.top()),
         egui::pos2(name_right.max(text_left + 8.0), rect.bottom()),
     );
-    let name_color = if comparison {
-        p.purple
-    } else if pinned {
+    let name_color = if pinned {
         p.amber
     } else if active {
         p.strong
@@ -5263,58 +5272,51 @@ fn split_cards(rect: egui::Rect, left_w: f32) -> (egui::Rect, egui::Rect) {
     (left, right)
 }
 
-/// Paints a floating card and returns its body rect.
+/// Paints a clean solid card and returns its body rect.
 fn draw_card(ui: &egui::Ui, rect: egui::Rect, focused: bool) -> egui::Rect {
     let radius = egui::CornerRadius::same(CARD_RADIUS);
     let painter = ui.painter();
     let dark = ui.visuals().dark_mode;
-    // The focused card is brighter and lifted; the other sits back.
-    // Shadows spill over the sidebar and window margins, so paint them unclipped
-    // (a painter derived from `ui` would cut them off at the panel edge).
+    let p = UiColors::new(dark);
+
+    // Subtle elevation shadow painted on the layer so it isn't clipped at panel edges.
     let shadow_painter = ui.ctx().layer_painter(ui.layer_id());
-    let (ambient, contact, hairline) = match (dark, focused) {
-        (false, true) => (20, 10, 26),
-        (false, false) => (12, 8, 26),
-        (true, true) => (110, 60, 0),
-        (true, false) => (60, 40, 0),
+    let shadow_alpha = match (dark, focused) {
+        (false, true) => 12,
+        (false, false) => 6,
+        (true, true) => 48,
+        (true, false) => 28,
     };
-    // Wide and soft, like a card resting just above the window.
-    shadow_painter.add(
-        egui::epaint::Shadow {
-            // Same shape for both cards so their edges read as level; only strength differs.
-            offset: [0, 4],
-            blur: 22,
-            spread: 0,
-            color: egui::Color32::from_black_alpha(ambient),
-        }
-        .as_shape(rect, radius),
-    );
     shadow_painter.add(
         egui::epaint::Shadow {
             offset: [0, 1],
-            blur: 3,
+            blur: 5,
             spread: 0,
-            color: egui::Color32::from_black_alpha(contact),
+            color: egui::Color32::from_black_alpha(shadow_alpha),
         }
         .as_shape(rect, radius),
     );
-    if hairline > 0 {
-        shadow_painter.rect_stroke(
-            rect,
-            radius,
-            egui::Stroke::new(0.5, egui::Color32::from_rgba_unmultiplied(15, 23, 42, hairline)),
-            egui::StrokeKind::Outside,
-        );
-    }
-    let kind = if focused { Glow::CardFocused } else { Glow::Card };
-    paint_glow_rect(ui.ctx(), painter, rect, radius, kind);
-    let edge = match (dark, focused) {
-        (true, true) => egui::Color32::from_white_alpha(34),
-        (true, false) => egui::Color32::from_white_alpha(16),
-        (false, true) => egui::Color32::WHITE,
-        (false, false) => egui::Color32::from_white_alpha(90),
+
+    let fill = match (dark, focused) {
+        (false, true) => p.surface,
+        (false, false) => egui::Color32::from_rgb(250, 251, 252),
+        (true, true) => p.surface,
+        (true, false) => egui::Color32::from_rgb(26, 27, 30),
     };
-    painter.rect_stroke(rect, radius, egui::Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+    let border = match (dark, focused) {
+        (false, true) => egui::Color32::from_rgb(212, 216, 224),
+        (false, false) => p.border,
+        (true, true) => egui::Color32::from_rgb(60, 63, 72),
+        (true, false) => p.border,
+    };
+    painter.rect(
+        rect,
+        radius,
+        fill,
+        egui::Stroke::new(1.0, border),
+        egui::StrokeKind::Inside,
+    );
+
     // Inset the body so square content backgrounds stay clear of the rounded border.
     egui::Rect::from_min_max(
         egui::pos2(rect.left() + 2.0, rect.top() + 8.0),
@@ -5382,87 +5384,6 @@ fn window_drag_area(ui: &egui::Ui, rect: egui::Rect, salt: &str) {
     if resp.double_clicked() {
         let is_max = ui.input(|i| i.viewport().maximized.unwrap_or(false));
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!is_max));
-    }
-}
-
-#[derive(Clone, Copy, Hash, PartialEq)]
-enum Glow {
-    /// Window background behind the sidebar and cards.
-    Backdrop,
-    /// A card that is not focused.
-    Card,
-    CardFocused,
-}
-
-/// Fills `rect` with the window-wide glow: a cool band along the top and a warm tint
-/// low on the right, sampled in window space so it runs unbroken across the sidebar
-/// and cards.
-fn paint_glow_rect(
-    ctx: &egui::Context,
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    radius: egui::CornerRadius,
-    kind: Glow,
-) {
-    let dark = ctx.theme() == egui::Theme::Dark;
-    let id = egui::Id::new(("glow_texture", dark, kind));
-    let texture = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)).unwrap_or_else(|| {
-        let texture = ctx.load_texture("glow", glow_image(dark, kind), egui::TextureOptions::LINEAR);
-        ctx.data_mut(|d| d.insert_temp(id, texture.clone()));
-        texture
-    });
-    let screen = ctx.screen_rect();
-    let norm = |p: egui::Pos2| {
-        egui::pos2(
-            (p.x - screen.left()) / screen.width().max(1.0),
-            (p.y - screen.top()) / screen.height().max(1.0),
-        )
-    };
-    let uv = egui::Rect::from_min_max(norm(rect.min), norm(rect.max));
-    painter.add(
-        egui::epaint::RectShape::filled(rect, radius, egui::Color32::WHITE)
-            .with_texture(texture.id(), uv),
-    );
-}
-
-fn glow_image(dark: bool, kind: Glow) -> egui::ColorImage {
-    // (base, cool glow, warm glow) as RGB, plus glow strengths.
-    let (base, cool, warm, cool_k, warm_k): ([f32; 3], [f32; 3], [f32; 3], f32, f32) =
-        match (dark, kind) {
-            (false, Glow::CardFocused) => ([255.0, 255.0, 255.0], [222.0, 241.0, 250.0], [254.0, 242.0, 232.0], 0.9, 0.55),
-            (false, Glow::Card) => ([248.0, 248.0, 250.0], [222.0, 238.0, 247.0], [250.0, 236.0, 226.0], 0.8, 0.7),
-            (false, Glow::Backdrop) => ([243.0, 243.0, 245.0], [230.0, 241.0, 248.0], [243.0, 236.0, 231.0], 0.8, 0.55),
-            (true, Glow::CardFocused) => ([33.0, 39.0, 54.0], [44.0, 64.0, 90.0], [58.0, 46.0, 50.0], 0.8, 0.5),
-            (true, Glow::Card) => ([24.0, 29.0, 40.0], [34.0, 50.0, 72.0], [44.0, 35.0, 39.0], 0.7, 0.5),
-            (true, Glow::Backdrop) => ([15.0, 18.0, 25.0], [24.0, 36.0, 54.0], [32.0, 25.0, 29.0], 0.7, 0.45),
-        };
-    const N: usize = 64;
-    let mut pixels = Vec::with_capacity(N * N);
-    // Smooth elliptical falloff: 1 at the center, 0 at the ellipse edge.
-    let falloff = |x: f32, y: f32, cx: f32, cy: f32, rx: f32, ry: f32| {
-        let d = (((x - cx) / rx).powi(2) + ((y - cy) / ry).powi(2)).sqrt().clamp(0.0, 1.0);
-        let t = 1.0 - d;
-        t * t * (3.0 - 2.0 * t)
-    };
-    for row in 0..N {
-        for col in 0..N {
-            let x = col as f32 / (N - 1) as f32;
-            let y = row as f32 / (N - 1) as f32;
-            // Cool: a wide, shallow band along the top. Warm: low on the right.
-            let c = falloff(x, y, 0.3, -0.12, 1.1, 0.42) * cool_k;
-            let w = falloff(x, y, 0.85, 1.08, 0.95, 0.7) * warm_k;
-            let mut px = [0u8; 3];
-            for i in 0..3 {
-                let v = base[i] + (cool[i] - base[i]) * c;
-                let v = v + (warm[i] - v) * w;
-                px[i] = v.round().clamp(0.0, 255.0) as u8;
-            }
-            pixels.push(egui::Color32::from_rgb(px[0], px[1], px[2]));
-        }
-    }
-    egui::ColorImage {
-        size: [N, N],
-        pixels,
     }
 }
 

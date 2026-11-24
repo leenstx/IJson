@@ -996,21 +996,56 @@ pub(crate) fn unique_tab_name(existing: &[JsonTab], base: &str) -> String {
     }
 }
 
-pub(crate) fn local_stamp_now() -> String {
+pub(crate) fn next_day_tab_name(existing: &[JsonTab]) -> String {
+    next_day_tab_name_for_day(existing, &local_day_now())
+}
+
+fn next_day_tab_name_for_day(existing: &[JsonTab], day: &str) -> String {
+    let prefix = format!("{day}.");
+    let max_num = existing
+        .iter()
+        .filter_map(|tab| {
+            let from_name = tab
+                .name
+                .strip_prefix(&prefix)
+                .and_then(|s| s.parse::<u32>().ok());
+            let from_auto = tab
+                .auto_name
+                .strip_prefix(&prefix)
+                .and_then(|s| s.parse::<u32>().ok());
+            from_name.max(from_auto)
+        })
+        .max()
+        .unwrap_or(0);
+    let mut n = max_num.saturating_add(1);
+    loop {
+        let candidate = format!("{day}.{n:03}");
+        if !existing.iter().any(|tab| tab.name == candidate) {
+            return candidate;
+        }
+        n = n.saturating_add(1);
+    }
+}
+
+fn local_day_now() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    format_local_stamp(secs)
+    format_local_day(secs)
+}
+
+pub(crate) fn local_stamp_now() -> String {
+    format!("{}.001", local_day_now())
 }
 
 pub(crate) fn stamp_from_system_time(time: std::time::SystemTime) -> Option<String> {
     let secs = time.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
-    Some(format_local_stamp(secs))
+    Some(format!("{}.001", format_local_day(secs)))
 }
 
 #[cfg(unix)]
-fn format_local_stamp(secs: i64) -> String {
+fn format_local_day(secs: i64) -> String {
     #[repr(C)]
     struct LibcTm {
         tm_sec: i32,
@@ -1033,17 +1068,14 @@ fn format_local_stamp(secs: i64) -> String {
     unsafe {
         let mut tm = std::mem::zeroed();
         if localtime_r(&secs, &mut tm).is_null() {
-            return "00.00:00:00".to_string();
+            return "00".to_string();
         }
-        format!(
-            "{:02}.{:02}:{:02}:{:02}",
-            tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec
-        )
+        format!("{:02}", tm.tm_mday)
     }
 }
 
 #[cfg(windows)]
-fn format_local_stamp(secs: i64) -> String {
+fn format_local_day(secs: i64) -> String {
     #[repr(C)]
     struct WinTm {
         tm_sec: i32,
@@ -1064,22 +1096,16 @@ fn format_local_stamp(secs: i64) -> String {
     unsafe {
         let mut tm = std::mem::zeroed();
         if _localtime64_s(&mut tm, &secs) != 0 {
-            return "00.00:00:00".to_string();
+            return "00".to_string();
         }
-        format!(
-            "{:02}.{:02}:{:02}:{:02}",
-            tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec
-        )
+        format!("{:02}", tm.tm_mday)
     }
 }
 
 #[cfg(not(any(unix, windows)))]
-fn format_local_stamp(secs: i64) -> String {
+fn format_local_day(secs: i64) -> String {
     let day = (secs / 86400) % 31 + 1;
-    let hour = (secs % 86400) / 3600;
-    let min = (secs % 3600) / 60;
-    let sec = secs % 60;
-    format!("{:02}.{:02}:{:02}:{:02}", day, hour, min, sec)
+    format!("{:02}", day)
 }
 
 /// Rows the fully expanded tree needs (one per value), counting at most up to `limit`.
@@ -1141,7 +1167,22 @@ pub(crate) fn editable_to_string(s: &str) -> String {
 
 #[cfg(test)]
 mod edit_string_tests {
-    use super::{editable_to_string, string_to_editable};
+    use super::{editable_to_string, next_day_tab_name_for_day, string_to_editable, JsonTab};
+    use crate::model::Indentation;
+
+    #[test]
+    fn day_tab_names_increment_sequentially() {
+        let mut tabs = Vec::new();
+        assert_eq!(next_day_tab_name_for_day(&tabs, "24"), "24.001");
+        tabs.push(JsonTab::empty(1, "24.001".to_string(), Indentation::default()));
+        assert_eq!(next_day_tab_name_for_day(&tabs, "24"), "24.002");
+        let mut renamed = JsonTab::empty(2, "24.002".to_string(), Indentation::default());
+        renamed.name = "custom".to_string();
+        tabs.push(renamed);
+        assert_eq!(next_day_tab_name_for_day(&tabs, "24"), "24.003");
+        // New day starts back at .001
+        assert_eq!(next_day_tab_name_for_day(&tabs, "25"), "25.001");
+    }
 
     #[test]
     fn round_trips_control_characters() {

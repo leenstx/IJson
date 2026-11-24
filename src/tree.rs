@@ -7,8 +7,14 @@ use crate::model::TreeAction;
 use crate::theme::ThemeColors;
 use crate::widgets::{row_label, show_tree_context_menu};
 
+pub(crate) const TREE_ROW_HEIGHT: f32 = 24.0;
 const TREE_FONT_SIZE: f32 = 13.0;
-const BADGE_FONT_SIZE: f32 = 12.0;
+const META_FONT_SIZE: f32 = 12.0;
+const ROW_LEFT_PAD: f32 = 4.0;
+const CHEVRON_W: f32 = 16.0;
+const CHEVRON_ICON_SIZE: f32 = 12.0;
+const CHEVRON_GAP: f32 = 4.0;
+pub(crate) const GUTTER_W: f32 = CHEVRON_W + CHEVRON_GAP;
 
 #[derive(Clone, Copy)]
 pub(crate) enum TreeLabel<'a> {
@@ -22,37 +28,57 @@ fn render_tree_label(
     label: TreeLabel<'_>,
     colors: ThemeColors,
     plain_json: bool,
+    is_container: bool,
 ) {
     match label {
         TreeLabel::Root => {}
-        TreeLabel::Key(key) => {
-            let key = if plain_json {
-                serde_json::to_string(key).expect("a string can be serialized to JSON")
-            } else {
-                format!("\"{key}\"")
-            };
+        TreeLabel::Key(key) if plain_json => {
+            let quoted = serde_json::to_string(key).expect("a string can be serialized to JSON");
             row_label(
                 ui,
-                egui::RichText::new(key)
+                egui::RichText::new(quoted)
                     .monospace()
                     .size(TREE_FONT_SIZE)
                     .color(colors.key),
             );
             row_label(
                 ui,
-                egui::RichText::new(if plain_json { ": " } else { ":" })
+                egui::RichText::new(": ")
                     .monospace()
                     .size(TREE_FONT_SIZE)
                     .color(colors.colon),
             );
         }
-        TreeLabel::Index(index) if !plain_json => row_label(
-            ui,
-            egui::RichText::new(index)
-                .monospace()
-                .size(BADGE_FONT_SIZE)
-                .color(colors.ui.muted),
-        ),
+        TreeLabel::Key(key) => {
+            let display = if key.is_empty() { "\"\"" } else { key };
+            row_label(
+                ui,
+                egui::RichText::new(display)
+                    .monospace()
+                    .size(TREE_FONT_SIZE)
+                    .color(colors.key),
+            );
+            if !is_container {
+                row_label(
+                    ui,
+                    egui::RichText::new(":")
+                        .monospace()
+                        .size(TREE_FONT_SIZE)
+                        .color(colors.colon),
+                );
+            }
+            ui.add_space(6.0);
+        }
+        TreeLabel::Index(index) if !plain_json => {
+            row_label(
+                ui,
+                egui::RichText::new(index)
+                    .monospace()
+                    .size(META_FONT_SIZE)
+                    .color(colors.ui.faint),
+            );
+            ui.add_space(8.0);
+        }
         TreeLabel::Index(_) => {}
     }
 }
@@ -71,6 +97,7 @@ pub(crate) fn render_tree_node(
     colors: ThemeColors,
     indent_step: f32,
     plain_json: bool,
+    show_fold_arrows: bool,
     trailing_comma: bool,
     action: &mut Option<TreeAction>,
     max_row_w: &mut f32,
@@ -82,7 +109,7 @@ pub(crate) fn render_tree_node(
     let is_current_match = cur_match_path == Some(path);
     let is_selected = selected_path == Some(path);
 
-    let row_height = 25.0;
+    let row_height = TREE_ROW_HEIGHT;
     let available_w = ui.available_width();
 
     // Rows outside the viewport only reserve their space, so big documents stay fast.
@@ -111,19 +138,21 @@ pub(crate) fn render_tree_node(
             *current_match_rect = Some(rect);
         }
 
+        let bg_rect = rect.shrink2(egui::vec2(0.0, 0.5));
         if is_current_match {
-            ui.painter().rect_filled(rect, 4.0, colors.match_current);
+            ui.painter().rect_filled(bg_rect, 4.0, colors.match_current);
         } else if is_search_match {
-            ui.painter().rect_filled(rect, 4.0, colors.match_highlight);
+            ui.painter()
+                .rect_filled(bg_rect, 4.0, colors.match_highlight);
         } else if is_selected {
-            ui.painter().rect_filled(rect, 4.0, colors.row_selected);
+            ui.painter().rect_filled(bg_rect, 4.0, colors.row_selected);
         } else if resp.hovered() {
-            ui.painter().rect_filled(rect, 4.0, colors.row_hover);
+            ui.painter().rect_filled(bg_rect, 4.0, colors.row_hover);
         }
 
         if !plain_json {
             for i in 0..depth {
-                let line_x = base_x + i as f32 * indent_step + 10.0;
+                let line_x = base_x + ROW_LEFT_PAD + i as f32 * indent_step + CHEVRON_W * 0.5;
                 ui.painter().vline(
                     line_x,
                     rect.top()..=rect.bottom(),
@@ -140,35 +169,46 @@ pub(crate) fn render_tree_node(
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
         ui_row.style_mut().interaction.selectable_labels = false;
-        if plain_json {
-            ui_row.spacing_mut().item_spacing.x = 0.0;
-        }
+        ui_row.spacing_mut().item_spacing.x = 0.0;
 
         if let Some((open, close, count)) = container {
-            ui_row.add_space(indent);
-            let can_fold = !plain_json || count > 0;
+            if !plain_json {
+                ui_row.add_space(ROW_LEFT_PAD + indent);
+            }
+            let can_fold = count > 0;
             let chevron_clicked = if can_fold {
                 let (chev_rect, chev_resp) =
-                    ui_row.allocate_exact_size(egui::vec2(16.0, 18.0), egui::Sense::click());
+                    ui_row.allocate_exact_size(egui::vec2(CHEVRON_W, 18.0), egui::Sense::click());
                 show_tree_context_menu(&chev_resp, value, path, key_label, true, action);
-                let (icon, color) = if is_collapsed {
-                    (LucideIcon::ChevronRight, colors.ui.muted)
-                } else {
-                    let color = if plain_json {
-                        colors.ui.muted
+                let show_chevron =
+                    !plain_json || is_collapsed || show_fold_arrows || chev_resp.hovered();
+                if show_chevron {
+                    let icon = if is_collapsed {
+                        LucideIcon::ChevronRight
                     } else {
-                        colors.ui.blue
+                        LucideIcon::ChevronDown
                     };
-                    (LucideIcon::ChevronDown, color)
-                };
-                let icon_rect =
-                    egui::Rect::from_center_size(chev_rect.center(), egui::vec2(12.0, 12.0));
-                draw_lucide_icon(ui_row.painter(), icon_rect, icon, color);
+                    let color = if chev_resp.hovered() || resp.hovered() {
+                        colors.ui.text
+                    } else {
+                        colors.ui.muted
+                    };
+                    let icon_rect = egui::Rect::from_center_size(
+                        chev_rect.center(),
+                        egui::vec2(CHEVRON_ICON_SIZE, CHEVRON_ICON_SIZE),
+                    );
+                    draw_lucide_icon(ui_row.painter(), icon_rect, icon, color);
+                }
                 chev_resp.clicked()
             } else {
-                ui_row.add_space(16.0);
+                ui_row.add_space(CHEVRON_W);
                 false
             };
+            if plain_json {
+                ui_row.add_space(CHEVRON_GAP + indent);
+            } else {
+                ui_row.add_space(CHEVRON_GAP);
+            }
 
             if chevron_clicked || (can_fold && resp.double_clicked()) {
                 if is_collapsed {
@@ -181,11 +221,11 @@ pub(crate) fn render_tree_node(
                 *action = Some(TreeAction::Select(path.to_string()));
             }
 
-            render_tree_label(&mut ui_row, label, colors, plain_json);
+            render_tree_label(&mut ui_row, label, colors, plain_json, true);
             let mut brackets = if count == 0 {
                 format!("{open}{close}")
             } else if !plain_json {
-                format!("{open} {count} {close}")
+                format!("{open}{count}{close}")
             } else if is_collapsed {
                 format!("{open}…{close}")
             } else {
@@ -201,9 +241,15 @@ pub(crate) fn render_tree_node(
                     .size(if plain_json {
                         TREE_FONT_SIZE
                     } else {
-                        BADGE_FONT_SIZE
+                        META_FONT_SIZE
                     })
-                    .color(colors.colon),
+                    .color(if !plain_json {
+                        colors.ui.faint
+                    } else if is_collapsed && count > 0 {
+                        colors.colon
+                    } else {
+                        colors.punctuation
+                    }),
             );
         } else {
             let is_cmd =
@@ -267,8 +313,13 @@ pub(crate) fn render_tree_node(
                 }
             }
 
-            ui_row.add_space(indent + if plain_json { 16.0 } else { 18.0 });
-            render_tree_label(&mut ui_row, label, colors, plain_json);
+            let leaf_pad = if plain_json {
+                GUTTER_W + indent
+            } else {
+                ROW_LEFT_PAD + indent + CHEVRON_W + CHEVRON_GAP
+            };
+            ui_row.add_space(leaf_pad);
+            render_tree_label(&mut ui_row, label, colors, plain_json, false);
 
             // Value formatting & coloring (No type badges, clean and airy)
             let (val_text, val_color) = match value {
@@ -299,7 +350,7 @@ pub(crate) fn render_tree_node(
                     egui::RichText::new(",")
                         .monospace()
                         .size(TREE_FONT_SIZE)
-                        .color(colors.colon),
+                        .color(colors.punctuation),
                 );
             }
         }
@@ -330,6 +381,7 @@ pub(crate) fn render_tree_node(
             colors,
             indent_step,
             plain_json,
+            show_fold_arrows,
             index + 1 < count,
             action,
             max_row_w,
@@ -344,11 +396,11 @@ pub(crate) fn render_tree_node(
         }
         Value::Array(arr) => {
             for (i, v) in arr.iter().enumerate() {
-                let index_label = format!("[{i}]");
+                let index_label = i.to_string();
                 child(
                     i,
                     v,
-                    &format!("{path}{index_label}"),
+                    &format!("{path}[{i}]"),
                     TreeLabel::Index(&index_label),
                 );
             }
@@ -367,15 +419,15 @@ pub(crate) fn render_tree_node(
             let galley = ui.painter().layout_no_wrap(
                 text,
                 egui::FontId::monospace(TREE_FONT_SIZE),
-                colors.colon,
+                colors.punctuation,
             );
             let pos = egui::pos2(
-                rect.left() + indent + 16.0,
+                rect.left() + GUTTER_W + indent,
                 rect.center().y - galley.size().y / 2.0,
             );
-            *max_row_w = max_row_w.max(indent + 16.0 + galley.size().x);
+            *max_row_w = max_row_w.max(GUTTER_W + indent + galley.size().x);
             ui.expand_to_include_rect(egui::Rect::from_min_size(pos, galley.size()));
-            ui.painter().galley(pos, galley, colors.colon);
+            ui.painter().galley(pos, galley, colors.punctuation);
         }
     }
 }
@@ -406,6 +458,7 @@ mod tests {
                     ThemeColors::current(ctx),
                     16.0,
                     plain_json,
+                    true,
                     false,
                     &mut None,
                     &mut 0.0,
@@ -425,13 +478,23 @@ mod tests {
 
     #[test]
     fn array_indices_and_object_keys_have_distinct_labels() {
-        let value = serde_json::json!([7, {"[0]": true}, [null]]);
+        let value = serde_json::json!([7, {"0": true}, [null]]);
         assert_eq!(
             rendered_labels(&value, false, HashSet::new()),
-            [
-                "[ 3 ]", "[0]", "7", "[1]", "{ 1 }", "\"[0]\"", ":", "true", "[2]", "[ 1 ]", "[0]",
-                "null"
-            ]
+            ["[3]", "0", "7", "1", "{1}", "0", ":", "true", "2", "[1]", "0", "null"]
+        );
+    }
+
+    #[test]
+    fn collapsed_tree_hides_children() {
+        let value = serde_json::json!({
+            "tags": ["rust", "json"],
+            "user": {"name": "Alice", "active": true}
+        });
+        let collapsed = HashSet::from(["$.tags".to_owned(), "$.user".to_owned()]);
+        assert_eq!(
+            rendered_labels(&value, false, collapsed),
+            ["{2}", "tags", "[2]", "user", "{2}"]
         );
     }
 
@@ -450,5 +513,51 @@ mod tests {
             rendered_labels(&value, true, collapsed),
             ["[", "{…},", "[…],", "[]", "]"]
         );
+    }
+
+    fn rendered_path_count(value: &Value, collapsed: HashSet<String>, show_fold_arrows: bool) -> usize {
+        let ctx = egui::Context::default();
+        let mut collapsed = collapsed;
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                render_tree_node(
+                    ui,
+                    value,
+                    "$",
+                    TreeLabel::Root,
+                    0,
+                    &mut collapsed,
+                    "",
+                    &[],
+                    None,
+                    None,
+                    ThemeColors::current(ctx),
+                    16.0,
+                    true,
+                    show_fold_arrows,
+                    false,
+                    &mut None,
+                    &mut 0.0,
+                    &mut None,
+                );
+            });
+        });
+        output
+            .shapes
+            .iter()
+            .filter(|shape| matches!(shape.shape, egui::Shape::Path(_)))
+            .count()
+    }
+
+    #[test]
+    fn fold_arrows_hide_when_expanded_unless_gutter_hovered_and_always_show_when_collapsed() {
+        let value = serde_json::json!({"a": [1, 2], "b": {"c": 3}});
+        // Expanded + not hovered => 0 chevron arrows
+        assert_eq!(rendered_path_count(&value, HashSet::new(), false), 0);
+        // Expanded + gutter hovered => 3 chevron arrows (root, $.a, $.b)
+        assert_eq!(rendered_path_count(&value, HashSet::new(), true), 3);
+        // Collapsed $.a + not hovered => 1 chevron arrow (only $.a)
+        let collapsed = HashSet::from(["$.a".to_owned()]);
+        assert_eq!(rendered_path_count(&value, collapsed, false), 1);
     }
 }
