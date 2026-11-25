@@ -2078,6 +2078,7 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
                             p.blue,
                             &tab_name,
                             true,
+                            0.0,
                             p,
                         );
                         let mut tree_ui = ui.new_child(
@@ -2104,6 +2105,16 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
                             .selected_path
                             .clone()
                             .unwrap_or_else(|| tr(ui.ctx(), "Selection").to_string());
+                        let selected_is_string = self.tabs[self.active]
+                            .selected_path
+                            .as_deref()
+                            .and_then(|path| {
+                                self.tabs[self.active]
+                                    .parsed
+                                    .as_ref()
+                                    .and_then(|parsed| value_at_path(parsed, path))
+                            })
+                            .is_some_and(Value::is_string);
                         draw_card(ui, left_rect, !node_focused);
                         let tree_body = draw_card_header(
                             ui,
@@ -2112,6 +2123,7 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
                             p.blue,
                             &tab_name,
                             !node_focused,
+                            0.0,
                             p,
                         );
                         let mut tree_ui = ui.new_child(
@@ -2122,6 +2134,11 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
                         self.render_tree_card(&mut tree_ui, tree_body, colors);
 
                         draw_card(ui, right_rect, node_focused);
+                        let switch_reserve = if selected_is_string {
+                            escape_switch_width(ui) + 12.0
+                        } else {
+                            0.0
+                        };
                         let node_body = draw_card_header(
                             ui,
                             right_rect,
@@ -2129,6 +2146,7 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
                             p.purple,
                             &node_title,
                             node_focused,
+                            switch_reserve,
                             p,
                         );
                         let mut node_ui = ui.new_child(
@@ -2137,13 +2155,24 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
                                 .layout(egui::Layout::top_down(egui::Align::LEFT)),
                         );
                         // Clicking the title copies the selected node's path.
+                        let header = egui::Rect::from_min_size(
+                            right_rect.min,
+                            egui::vec2(right_rect.width(), CARD_HEADER_H),
+                        );
                         if let Some(path) = self.tabs[self.active].selected_path.clone() {
-                            let header = egui::Rect::from_min_size(
-                                right_rect.min,
-                                egui::vec2(right_rect.width(), CARD_HEADER_H),
+                            let copy_rect = egui::Rect::from_min_max(
+                                header.min,
+                                egui::pos2(
+                                    (header.right() - switch_reserve).max(header.left()),
+                                    header.bottom(),
+                                ),
                             );
                             let resp = ui
-                                .interact(header, egui::Id::new("node_title_copy"), egui::Sense::click())
+                                .interact(
+                                    copy_rect,
+                                    egui::Id::new("node_title_copy"),
+                                    egui::Sense::click(),
+                                )
                                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                                 .on_hover_text(tr(ui.ctx(), "Click to copy path"));
                             if resp.clicked() {
@@ -2157,6 +2186,10 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
                                 ));
                                 tab.copy_notice_in_node = true;
                             }
+                        }
+                        if selected_is_string {
+                            let tab = &mut self.tabs[self.active];
+                            draw_escape_switch(ui, header, tab.id, &mut tab.node_string_escaped, p);
                         }
                         self.tabs[self.active].render_node_card(&mut node_ui, node_body, colors);
 
@@ -2771,7 +2804,7 @@ impl JsonTab {
                         Value::Bool(_) => colors.boolean,
                         _ => colors.null,
                     };
-                    let text = value.to_string();
+                    let text = format_node_primitive(value, self.node_string_escaped);
                     self.parsed = Some(parsed);
                     let mut scroll = egui::ScrollArea::vertical()
                         .id_salt(("node_value_scroll", self.id))
@@ -2782,18 +2815,27 @@ impl JsonTab {
                         scroll = scroll.vertical_scroll_offset(0.0);
                     }
                     scroll.show(ui, |ui| {
-                        // Align the first line with the first row of the left tree.
-                        ui.add_space(4.5);
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(text)
-                                    .font(egui::FontId::monospace(13.0))
-                                    .line_height(Some(19.5))
-                                    .color(color),
-                            )
-                            .wrap()
-                            .selectable(true),
-                        );
+                        egui::Frame::default()
+                            .inner_margin(egui::Margin {
+                                left: 12,
+                                right: 8,
+                                top: 0,
+                                bottom: 0,
+                            })
+                            .show(ui, |ui| {
+                                // Align the first line with the first row of the left tree.
+                                ui.add_space(4.5);
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(text)
+                                            .font(egui::FontId::monospace(13.0))
+                                            .line_height(Some(19.5))
+                                            .color(color),
+                                    )
+                                    .wrap()
+                                    .selectable(true),
+                                );
+                            });
                     });
                     if self.copy_notice_in_node {
                         self.draw_copy_notice(ui, card_rect, p);
@@ -5280,6 +5322,96 @@ fn draw_card(ui: &egui::Ui, rect: egui::Rect, focused: bool) -> egui::Rect {
 
 const CARD_HEADER_H: f32 = 32.0;
 
+/// Formats a primitive JSON value for the right-hand node panel.
+/// Strings can be shown either JSON-escaped (with quotes and escape sequences) or raw.
+fn format_node_primitive(value: &Value, string_escaped: bool) -> String {
+    match value {
+        Value::String(s) if !string_escaped => s.clone(),
+        _ => value.to_string(),
+    }
+}
+
+const ESCAPE_SWITCH_FONT_SIZE: f32 = 11.5;
+const ESCAPE_SWITCH_TRACK_W: f32 = 26.0;
+const ESCAPE_SWITCH_TRACK_H: f32 = 14.0;
+const ESCAPE_SWITCH_GAP: f32 = 6.0;
+const ESCAPE_SWITCH_PAD_X: f32 = 6.0;
+const ESCAPE_SWITCH_HEIGHT: f32 = 22.0;
+
+fn escape_switch_width(ui: &egui::Ui) -> f32 {
+    let label = tr(ui.ctx(), "Escape");
+    let font = egui::FontId::proportional(ESCAPE_SWITCH_FONT_SIZE);
+    let label_w = ui.fonts(|f| f.layout_no_wrap(label.to_owned(), font, egui::Color32::WHITE).size().x);
+    ESCAPE_SWITCH_PAD_X * 2.0 + label_w + ESCAPE_SWITCH_GAP + ESCAPE_SWITCH_TRACK_W
+}
+
+/// Draws a compact "Escape" toggle switch at the top-right corner of the node panel header.
+fn draw_escape_switch(
+    ui: &mut egui::Ui,
+    header: egui::Rect,
+    tab_id: u64,
+    escaped: &mut bool,
+    p: UiColors,
+) {
+    let w = escape_switch_width(ui);
+    let rect = egui::Rect::from_center_size(
+        egui::pos2(header.right() - 10.0 - w * 0.5, header.center().y),
+        egui::vec2(w, ESCAPE_SWITCH_HEIGHT),
+    );
+    let id = egui::Id::new(("node_escape_switch", tab_id));
+    let tip = if *escaped {
+        "Showing escaped string · click to unescape"
+    } else {
+        "Showing unescaped string · click to escape"
+    };
+    let resp = ui
+        .interact(rect, id, egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(tr(ui.ctx(), tip));
+    if resp.clicked() {
+        *escaped = !*escaped;
+    }
+
+    let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(header));
+
+    let label_color = if *escaped || resp.hovered() { p.text } else { p.muted };
+    let label = tr(ui.ctx(), "Escape");
+    let font = egui::FontId::proportional(ESCAPE_SWITCH_FONT_SIZE);
+    let galley = ui.fonts(|f| f.layout_no_wrap(label.to_owned(), font, label_color));
+    painter.galley(
+        egui::pos2(
+            rect.left() + ESCAPE_SWITCH_PAD_X,
+            rect.center().y - galley.size().y * 0.5,
+        ),
+        galley,
+        label_color,
+    );
+
+    let track_rect = egui::Rect::from_center_size(
+        egui::pos2(
+            rect.right() - ESCAPE_SWITCH_PAD_X - ESCAPE_SWITCH_TRACK_W * 0.5,
+            rect.center().y,
+        ),
+        egui::vec2(ESCAPE_SWITCH_TRACK_W, ESCAPE_SWITCH_TRACK_H),
+    );
+    let anim = ui.ctx().animate_bool_responsive(id, *escaped);
+    let track_bg = if *escaped { p.primary } else { p.border };
+    let track_radius = egui::CornerRadius::same((ESCAPE_SWITCH_TRACK_H * 0.5) as u8);
+    painter.rect_filled(track_rect, track_radius, track_bg);
+
+    let thumb_r = ESCAPE_SWITCH_TRACK_H * 0.5 - 2.0;
+    let thumb_x = egui::lerp(
+        (track_rect.left() + ESCAPE_SWITCH_TRACK_H * 0.5)
+            ..=(track_rect.right() - ESCAPE_SWITCH_TRACK_H * 0.5),
+        anim,
+    );
+    painter.circle_filled(
+        egui::pos2(thumb_x, track_rect.center().y),
+        thumb_r,
+        egui::Color32::WHITE,
+    );
+}
+
 /// Paints an icon + title header across the top of a card drawn by `draw_card`,
 /// and returns the body rect below it.
 fn draw_card_header(
@@ -5289,6 +5421,7 @@ fn draw_card_header(
     icon_color: egui::Color32,
     title: &str,
     focused: bool,
+    right_reserve: f32,
     p: UiColors,
 ) -> egui::Rect {
     let painter = ui.painter();
@@ -5303,7 +5436,10 @@ fn draw_card_header(
     draw_lucide_icon(painter, icon_rect, icon, icon_color);
     let text_rect = egui::Rect::from_min_max(
         egui::pos2(icon_rect.right() + 8.0, header.top()),
-        egui::pos2(header.right() - 12.0, header.bottom()),
+        egui::pos2(
+            (header.right() - 12.0 - right_reserve).max(icon_rect.right() + 8.0),
+            header.bottom(),
+        ),
     );
     let galley = ui.fonts(|f| {
         let mut job = egui::text::LayoutJob::simple_singleline(
@@ -5392,5 +5528,22 @@ mod intro_tests {
         assert!((160.0..260.0).contains(&wide), "wide: {wide}");
         let narrow = intro_height(egui::vec2(260.0, 500.0));
         assert!(narrow >= wide && narrow < 380.0, "narrow: {narrow}, wide: {wide}");
+    }
+
+    #[test]
+    fn format_node_primitive_toggles_string_escaping() {
+        let s = serde_json::json!("line1\nline2\t\"quoted\"\\end");
+        assert_eq!(
+            format_node_primitive(&s, true),
+            "\"line1\\nline2\\t\\\"quoted\\\"\\\\end\""
+        );
+        assert_eq!(
+            format_node_primitive(&s, false),
+            "line1\nline2\t\"quoted\"\\end"
+        );
+
+        assert_eq!(format_node_primitive(&serde_json::json!(42), false), "42");
+        assert_eq!(format_node_primitive(&serde_json::json!(true), false), "true");
+        assert_eq!(format_node_primitive(&serde_json::json!(null), false), "null");
     }
 }

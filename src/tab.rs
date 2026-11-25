@@ -102,6 +102,8 @@ pub(crate) struct JsonTab {
     pub(crate) node_selected_path: Option<String>,
     pub(crate) node_scroll_x: f32,
     pub(crate) node_content_width: f32,
+    /// When the right-hand panel displays a primitive string, whether to show it JSON-escaped.
+    pub(crate) node_string_escaped: bool,
     /// Whether the copy badge belongs to the right-hand panel.
     pub(crate) copy_notice_in_node: bool,
     pub(crate) request_loading: Option<RequestLoadingState>,
@@ -170,6 +172,7 @@ impl JsonTab {
             node_selected_path: None,
             node_scroll_x: 0.0,
             node_content_width: 0.0,
+            node_string_escaped: true,
             copy_notice_in_node: false,
             request_loading: None,
             copy_notice: None,
