@@ -1583,146 +1583,322 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
             ui.add_space(14.0);
 
             // 2. Software update section
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(tr(ui.ctx(), "Software Update"))
-                        .size(13.0)
-                        .strong()
-                        .color(p.strong),
-                );
-            });
-            ui.add_space(8.0);
-
+            let green = if dark {
+                egui::Color32::from_rgb(74, 222, 128)
+            } else {
+                egui::Color32::from_rgb(22, 163, 74)
+            };
             let status = self.updater.status();
-            match status {
-                UpdateStatus::Available(release) => {
-                    ui.horizontal(|ui| {
-                        let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 14.0), egui::Sense::hover());
-                        ui.painter().circle_filled(dot_rect.center(), 4.0, egui::Color32::from_rgb(239, 68, 68));
-                        ui.label(
-                            egui::RichText::new(format!("{} (v{})", tr(ui.ctx(), "New version available"), release.version))
-                                .size(12.5)
-                                .color(p.strong)
-                                .strong(),
-                        );
-                    });
-                    if !release.name.is_empty() && release.name != release.tag {
-                        ui.add_space(2.0);
-                        ui.label(egui::RichText::new(&release.name).size(11.5).color(p.muted));
+
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new(tr(ui.ctx(), "Software Update"))
+                            .size(13.0)
+                            .strong()
+                            .color(p.strong),
+                    );
+                    ui.add_space(1.0);
+                    match &status {
+                        UpdateStatus::Available(release) => {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 5.0;
+                                let (dot_rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(8.0, 14.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().circle_filled(dot_rect.center(), 3.5, p.primary);
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{} · v{}",
+                                        tr(ui.ctx(), "New version available"),
+                                        release.version
+                                    ))
+                                    .size(11.5)
+                                    .color(p.text),
+                                );
+                            });
+                        }
+                        UpdateStatus::Downloading { version, .. } => {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} v{}",
+                                    tr(ui.ctx(), "Downloading…"),
+                                    version
+                                ))
+                                .size(11.5)
+                                .color(p.muted),
+                            );
+                        }
+                        UpdateStatus::Installing { version } => {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 5.0;
+                                ui.add(egui::Spinner::new().size(11.0));
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{} (v{})…",
+                                        tr(ui.ctx(), "Installing update and restarting"),
+                                        version
+                                    ))
+                                    .size(11.5)
+                                    .color(p.muted),
+                                );
+                            });
+                        }
+                        UpdateStatus::Downloaded { version, .. } => {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 5.0;
+                                let (icon_rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(13.0, 14.0),
+                                    egui::Sense::hover(),
+                                );
+                                draw_lucide_icon(
+                                    ui.painter(),
+                                    icon_rect,
+                                    LucideIcon::Check,
+                                    green,
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{} · v{}",
+                                        tr(ui.ctx(), "Update ready to install"),
+                                        version
+                                    ))
+                                    .size(11.5)
+                                    .color(p.text),
+                                );
+                            });
+                        }
+                        UpdateStatus::Checking => {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 5.0;
+                                ui.add(egui::Spinner::new().size(11.0));
+                                ui.label(
+                                    egui::RichText::new(tr(ui.ctx(), "Checking for updates…"))
+                                        .size(11.5)
+                                        .color(p.muted),
+                                );
+                            });
+                        }
+                        UpdateStatus::UpToDate => {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 5.0;
+                                let (icon_rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(13.0, 14.0),
+                                    egui::Sense::hover(),
+                                );
+                                draw_lucide_icon(
+                                    ui.painter(),
+                                    icon_rect,
+                                    LucideIcon::Check,
+                                    green,
+                                );
+                                ui.label(
+                                    egui::RichText::new(tr(ui.ctx(), "You're up to date"))
+                                        .size(11.5)
+                                        .color(p.muted),
+                                );
+                            });
+                        }
+                        UpdateStatus::Error(_) => {
+                            ui.label(
+                                egui::RichText::new(tr(ui.ctx(), "Failed to check for updates"))
+                                    .size(11.5)
+                                    .color(p.danger),
+                            );
+                        }
+                        UpdateStatus::Idle => {
+                            ui.label(
+                                egui::RichText::new(tr(ui.ctx(), "Check for the latest release"))
+                                    .size(11.5)
+                                    .color(p.muted),
+                            );
+                        }
                     }
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if compact_button(ui, "Update & Restart", true).clicked() {
-                            self.updater.download(ui.ctx().clone(), release.clone(), true);
+                });
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    match &status {
+                        UpdateStatus::Available(release) => {
+                            if settings_action_button(ui, Some(LucideIcon::Download), "Update & Restart", true, p).clicked() {
+                                self.updater.download(ui.ctx().clone(), release.clone(), true);
+                            }
                         }
-                        ui.add_space(6.0);
-                        if compact_button(ui, "Release Notes", false).clicked() {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(&release.html_url));
+                        UpdateStatus::Downloaded { file_path, .. } => {
+                            if settings_action_button(ui, None, "Restart & Install", true, p).clicked() {
+                                self.updater.apply_and_restart(file_path);
+                            }
                         }
-                    });
+                        UpdateStatus::UpToDate | UpdateStatus::Idle => {
+                            if settings_action_button(ui, Some(LucideIcon::RefreshCw), "Check for Updates", false, p).clicked() {
+                                self.updater.check(ui.ctx().clone(), true);
+                            }
+                        }
+                        UpdateStatus::Error(_) => {
+                            if settings_action_button(ui, Some(LucideIcon::RefreshCw), "Retry", false, p).clicked() {
+                                self.updater.check(ui.ctx().clone(), true);
+                            }
+                        }
+                        UpdateStatus::Checking
+                        | UpdateStatus::Downloading { .. }
+                        | UpdateStatus::Installing { .. } => {}
+                    }
+                });
+            });
+
+            // Optional detail banner for active update states (available, downloading, downloaded, error)
+            match &status {
+                UpdateStatus::Available(release) => {
+                    ui.add_space(10.0);
+                    egui::Frame::default()
+                        .fill(p.subtle)
+                        .stroke(egui::Stroke::new(1.0, p.border))
+                        .corner_radius(egui::CornerRadius::same(7))
+                        .inner_margin(egui::Margin::symmetric(10, 7))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                let note = if !release.name.is_empty() && release.name != release.tag {
+                                    release.name.as_str()
+                                } else {
+                                    release.tag.as_str()
+                                };
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(note).size(11.5).color(p.muted),
+                                    )
+                                    .truncate(),
+                                );
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    let link = ui
+                                        .add(
+                                            egui::Label::new(
+                                                egui::RichText::new(format!(
+                                                    "{} ↗",
+                                                    tr(ui.ctx(), "Release Notes")
+                                                ))
+                                                .size(11.5)
+                                                .color(p.blue),
+                                            )
+                                            .sense(egui::Sense::click()),
+                                        )
+                                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                                    if link.clicked() {
+                                        ui.ctx().open_url(egui::OpenUrl::new_tab(&release.html_url));
+                                    }
+                                });
+                            });
+                        });
                 }
                 UpdateStatus::Downloading {
-                    version,
                     downloaded_bytes,
                     total_bytes,
                     progress,
+                    ..
                 } => {
-                    ui.label(
-                        egui::RichText::new(format!("{} v{}", tr(ui.ctx(), "Downloading…"), version))
-                            .size(12.0)
-                            .color(p.strong),
-                    );
-                    ui.add_space(6.0);
-                    ui.add(egui::ProgressBar::new(progress).show_percentage());
-                    ui.add_space(4.0);
-                    let size_text = if let Some(tot) = total_bytes {
-                        format!("{:.1} MB / {:.1} MB", downloaded_bytes as f64 / 1_048_576.0, tot as f64 / 1_048_576.0)
-                    } else {
-                        format!("{:.1} MB", downloaded_bytes as f64 / 1_048_576.0)
-                    };
-                    ui.label(egui::RichText::new(size_text).size(11.0).color(p.muted));
+                    ui.add_space(10.0);
+                    egui::Frame::default()
+                        .fill(p.subtle)
+                        .stroke(egui::Stroke::new(1.0, p.border))
+                        .corner_radius(egui::CornerRadius::same(7))
+                        .inner_margin(egui::Margin::symmetric(10, 8))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            let pct = (progress.clamp(0.0, 1.0) * 100.0).round() as u32;
+                            let size_text = if let Some(tot) = total_bytes {
+                                format!(
+                                    "{:.1} MB / {:.1} MB",
+                                    *downloaded_bytes as f64 / 1_048_576.0,
+                                    *tot as f64 / 1_048_576.0
+                                )
+                            } else {
+                                format!("{:.1} MB", *downloaded_bytes as f64 / 1_048_576.0)
+                            };
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(size_text).size(11.0).color(p.muted));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("{pct}%"))
+                                            .size(11.0)
+                                            .strong()
+                                            .color(p.text),
+                                    );
+                                });
+                            });
+                            ui.add_space(5.0);
+                            let (bar_rect, _) = ui.allocate_exact_size(
+                                egui::vec2(ui.available_width(), 5.0),
+                                egui::Sense::hover(),
+                            );
+                            let radius = egui::CornerRadius::same(3);
+                            ui.painter().rect_filled(bar_rect, radius, p.border);
+                            let fill_w = (bar_rect.width() * progress.clamp(0.0, 1.0)).max(0.0);
+                            if fill_w > 0.0 {
+                                let fill_rect = egui::Rect::from_min_size(
+                                    bar_rect.min,
+                                    egui::vec2(fill_w, bar_rect.height()),
+                                );
+                                ui.painter().rect_filled(fill_rect, radius, p.primary);
+                            }
+                        });
                 }
-                UpdateStatus::Installing { version } => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new(format!("{} (v{})…", tr(ui.ctx(), "Installing update and restarting"), version))
-                                .size(12.5)
-                                .color(p.strong)
-                                .strong(),
-                        );
-                    });
-                }
-                UpdateStatus::Downloaded { version, file_path } => {
-                    ui.horizontal(|ui| {
-                        let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                        draw_lucide_icon(ui.painter(), icon_rect, LucideIcon::Check, egui::Color32::from_rgb(34, 197, 94));
-                        ui.label(
-                            egui::RichText::new(format!("{} (v{})", tr(ui.ctx(), "Update ready to install"), version))
-                                .size(12.5)
-                                .color(p.strong)
-                                .strong(),
-                        );
-                    });
-                    ui.add_space(2.0);
-                    ui.label(
-                        egui::RichText::new(tr(ui.ctx(), "The update has been downloaded. Restart to apply."))
-                            .size(11.5)
-                            .color(p.muted),
-                    );
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if compact_button(ui, "Restart & Install", true).clicked() {
-                            self.updater.apply_and_restart(&file_path);
-                        }
-                        ui.add_space(6.0);
-                        if compact_button(ui, "Open Installer", false).clicked() {
-                            self.updater.open_installer(&file_path);
-                        }
-                    });
-                }
-                UpdateStatus::Checking => {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(tr(ui.ctx(), "Checking for updates…")).size(12.0).color(p.muted));
-                    });
-                }
-                UpdateStatus::UpToDate => {
-                    ui.horizontal(|ui| {
-                        let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(15.0, 15.0), egui::Sense::hover());
-                        draw_lucide_icon(ui.painter(), icon_rect, LucideIcon::Check, egui::Color32::from_rgb(34, 197, 94));
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{} · v{} {}",
-                                tr(ui.ctx(), "You're up to date"),
-                                CURRENT_VERSION,
-                                tr(ui.ctx(), "is the latest version.")
-                            ))
-                            .size(12.0)
-                            .color(p.muted),
-                        );
-                    });
-                    ui.add_space(8.0);
-                    if compact_button(ui, "Check for Updates", false).clicked() {
-                        self.updater.check(ui.ctx().clone(), true);
-                    }
+                UpdateStatus::Downloaded { file_path, .. } => {
+                    ui.add_space(10.0);
+                    egui::Frame::default()
+                        .fill(p.subtle)
+                        .stroke(egui::Stroke::new(1.0, p.border))
+                        .corner_radius(egui::CornerRadius::same(7))
+                        .inner_margin(egui::Margin::symmetric(10, 7))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(tr(
+                                            ui.ctx(),
+                                            "The update has been downloaded. Restart to apply.",
+                                        ))
+                                        .size(11.5)
+                                        .color(p.muted),
+                                    )
+                                    .truncate(),
+                                );
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    let link = ui
+                                        .add(
+                                            egui::Label::new(
+                                                egui::RichText::new(tr(ui.ctx(), "Open Installer"))
+                                                    .size(11.5)
+                                                    .color(p.blue),
+                                            )
+                                            .sense(egui::Sense::click()),
+                                        )
+                                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                                    if link.clicked() {
+                                        self.updater.open_installer(file_path);
+                                    }
+                                });
+                            });
+                        });
                 }
                 UpdateStatus::Error(err) => {
-                    ui.label(
-                        egui::RichText::new(format!("{}: {}", tr(ui.ctx(), "Failed to check for updates"), err))
-                            .size(11.5)
-                            .color(p.danger),
-                    );
-                    ui.add_space(6.0);
-                    if compact_button(ui, "Retry", false).clicked() {
-                        self.updater.check(ui.ctx().clone(), true);
-                    }
+                    ui.add_space(8.0);
+                    egui::Frame::default()
+                        .fill(p.danger_bg)
+                        .stroke(egui::Stroke::new(1.0, p.danger_border))
+                        .corner_radius(egui::CornerRadius::same(7))
+                        .inner_margin(egui::Margin::symmetric(10, 6))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(err).size(11.0).color(p.danger),
+                                )
+                                .wrap(),
+                            );
+                        });
                 }
-                UpdateStatus::Idle => {
-                    if compact_button(ui, "Check for Updates", false).clicked() {
-                        self.updater.check(ui.ctx().clone(), true);
-                    }
-                }
+                _ => {}
             }
 
             ui.add_space(14.0);
@@ -1733,25 +1909,77 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
             );
             ui.add_space(14.0);
 
-            // 3. Auto-check preference & repo link
-            if ui.checkbox(&mut self.auto_check_updates, tr(ui.ctx(), "Automatically check for updates")).changed() {
-                self.cache_dirty = true;
-            }
-            ui.add_space(10.0);
+            // 3. Auto-check preference row (matching Language row layout)
             ui.horizontal(|ui| {
-                let link = ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(format!("{} ↗", tr(ui.ctx(), "View on GitHub")))
-                            .size(12.0)
-                            .color(p.blue),
-                    )
-                    .sense(egui::Sense::click()),
-                );
-                if link.clicked() {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab("https://github.com/leenstx/IJson"));
-                }
-                link.on_hover_cursor(egui::CursorIcon::PointingHand);
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new(tr(ui.ctx(), "Automatically check for updates"))
+                            .size(13.0)
+                            .strong()
+                            .color(p.strong),
+                    );
+                    ui.label(
+                        egui::RichText::new(tr(ui.ctx(), "Check for new versions on startup"))
+                            .size(11.5)
+                            .color(p.muted),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if settings_toggle_switch(
+                        ui,
+                        egui::Id::new("settings_auto_check_updates"),
+                        &mut self.auto_check_updates,
+                        p,
+                    ) {
+                        self.cache_dirty = true;
+                    }
+                });
             });
+
+            ui.add_space(14.0);
+            ui.painter().hline(
+                ui.available_rect_before_wrap().x_range(),
+                ui.cursor().top(),
+                egui::Stroke::new(1.0, p.border.gamma_multiply(0.6)),
+            );
+            ui.add_space(10.0);
+
+            // 4. GitHub repository link row
+            let (row_rect, row_resp) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), 32.0),
+                egui::Sense::click(),
+            );
+            let row_resp = row_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+            let hover_rect = row_rect.expand2(egui::vec2(6.0, 0.0));
+            if row_resp.is_pointer_button_down_on() {
+                ui.painter().rect_filled(hover_rect, egui::CornerRadius::same(7), p.pressed);
+            } else if row_resp.hovered() {
+                ui.painter().rect_filled(hover_rect, egui::CornerRadius::same(7), p.subtle);
+            }
+            let title_color = if row_resp.hovered() { p.strong } else { p.text };
+            ui.painter().text(
+                egui::pos2(row_rect.left(), row_rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                tr(ui.ctx(), "View on GitHub"),
+                egui::FontId::proportional(12.5),
+                title_color,
+            );
+            let icon_rect = egui::Rect::from_center_size(
+                egui::pos2(row_rect.right() - 6.5, row_rect.center().y),
+                egui::vec2(13.0, 13.0),
+            );
+            let icon_color = if row_resp.hovered() { p.blue } else { p.muted };
+            draw_lucide_icon(ui.painter(), icon_rect, LucideIcon::ExternalLink, icon_color);
+            ui.painter().text(
+                egui::pos2(icon_rect.left() - 6.0, row_rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                "github.com/leenstx/IJson",
+                egui::FontId::proportional(11.5),
+                if row_resp.hovered() { p.text } else { p.muted },
+            );
+            if row_resp.clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab("https://github.com/leenstx/IJson"));
+            }
         });
     }
 
@@ -5318,6 +5546,100 @@ fn draw_card(ui: &egui::Ui, rect: egui::Rect, focused: bool) -> egui::Rect {
         egui::pos2(rect.left() + 2.0, rect.top() + 8.0),
         egui::pos2(rect.right() - 2.0, rect.bottom() - 6.0),
     )
+}
+
+/// Animated pill toggle switch for settings rows. Returns `true` when toggled.
+fn settings_toggle_switch(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    value: &mut bool,
+    p: &UiColors,
+) -> bool {
+    let track_w = 34.0;
+    let track_h = 18.0;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(track_w, track_h), egui::Sense::click());
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let mut changed = false;
+    if resp.clicked() {
+        *value = !*value;
+        changed = true;
+    }
+
+    let anim = ui.ctx().animate_bool_responsive(id, *value);
+    let track_bg = if *value { p.primary } else { p.border };
+    let radius = egui::CornerRadius::same((track_h * 0.5) as u8);
+    ui.painter().rect_filled(rect, radius, track_bg);
+
+    let thumb_r = track_h * 0.5 - 2.0;
+    let thumb_x = egui::lerp(
+        (rect.left() + track_h * 0.5)..=(rect.right() - track_h * 0.5),
+        anim,
+    );
+    ui.painter().circle_filled(
+        egui::pos2(thumb_x, rect.center().y),
+        thumb_r,
+        egui::Color32::WHITE,
+    );
+    changed
+}
+
+/// Compact settings row action button with an optional leading Lucide icon.
+fn settings_action_button(
+    ui: &mut egui::Ui,
+    icon: Option<LucideIcon>,
+    label: &str,
+    primary: bool,
+    p: &UiColors,
+) -> egui::Response {
+    let text = tr(ui.ctx(), label);
+    let font = egui::FontId::proportional(12.0);
+    let text_w = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), font.clone(), p.text)
+        .size()
+        .x;
+    let icon_size = 12.5;
+    let icon_gap = if icon.is_some() { 5.0 } else { 0.0 };
+    let pad_x = 11.0;
+    let w = pad_x * 2.0 + if icon.is_some() { icon_size } else { 0.0 } + icon_gap + text_w;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 26.0), egui::Sense::click());
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+
+    let (bg, fg, stroke) = if primary {
+        let bg = if resp.is_pointer_button_down_on() {
+            p.primary.gamma_multiply(0.85)
+        } else {
+            p.primary
+        };
+        (bg, egui::Color32::WHITE, egui::Stroke::NONE)
+    } else if resp.is_pointer_button_down_on() {
+        (p.pressed, p.strong, egui::Stroke::new(1.0, p.border))
+    } else if resp.hovered() {
+        (p.hover, p.strong, egui::Stroke::new(1.0, p.border))
+    } else {
+        (p.subtle, p.text, egui::Stroke::new(1.0, p.border))
+    };
+
+    ui.painter()
+        .rect(rect, egui::CornerRadius::same(6), bg, stroke, egui::StrokeKind::Inside);
+
+    let mut x = rect.left() + pad_x;
+    if let Some(ic) = icon {
+        let icon_rect = egui::Rect::from_center_size(
+            egui::pos2(x + icon_size * 0.5, rect.center().y),
+            egui::vec2(icon_size, icon_size),
+        );
+        draw_lucide_icon(ui.painter(), icon_rect, ic, fg);
+        x += icon_size + icon_gap;
+    }
+    ui.painter().text(
+        egui::pos2(x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        text,
+        font,
+        fg,
+    );
+    resp
 }
 
 const CARD_HEADER_H: f32 = 32.0;
