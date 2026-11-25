@@ -16,8 +16,8 @@ use crate::model::{
     Indentation, ParseError, SortMode, TreeAction, ValueTypeTag,
 };
 use crate::tab::{
-    local_stamp_now, next_day_tab_name, stamp_from_system_time, tab_from_value, unique_tab_name,
-    EditorGalleyCache, JsonTab, TAB_RAIL_WIDTH,
+    local_stamp_now, next_compare_tab_name, next_day_tab_name, stamp_from_system_time,
+    tab_from_value, EditorGalleyCache, JsonTab, TAB_RAIL_WIDTH,
 };
 use crate::i18n::{tr, Language};
 use crate::keymap::{record_key, tip_with_shortcut, Action, Keymap, Recorded};
@@ -402,7 +402,7 @@ impl JsonViewerApp {
         self.commit_rename();
         let source = &self.tabs[self.active];
         let input = source.input.clone();
-        let name = unique_tab_name(&self.tabs, &format!("{} · {}", tr(ctx, "Compare"), source.name));
+        let name = next_compare_tab_name(&self.tabs);
         let previous = source.id;
         self.surrender_focus(ctx, previous);
         let id = self.alloc_id();
@@ -2060,87 +2060,109 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
                     self.tabs[self.active].render_editor_card(&mut editor_ui, body, colors, None);
                     self.draw_copy_notice(&editor_ui, body, p);
                 } else {
-                    // VIEW MODE: whole tree on the left, selected node on the right.
+                    // VIEW MODE: whole tree on the left, selected node on the right
+                    // (selection panel is hidden when there is no parsed JSON yet).
                     let tab = &mut self.tabs[self.active];
                     // The editor is hidden, so clicks and pastes must not target it.
                     tab.editor_card_rect = egui::Rect::NOTHING;
                     tab.poll_request_loading(ui.ctx());
 
-                    let (left_rect, right_rect) = split_cards(cards_rect, left_w);
-                    // A click inside a card focuses it.
-                    if let Some(pos) = ui.input(|i| {
-                        i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten()
-                    }) {
-                        if right_rect.contains(pos) {
-                            self.node_focused = true;
-                        } else if left_rect.contains(pos) {
-                            self.node_focused = false;
-                        }
-                    }
-                    let node_focused = self.node_focused;
-                    let tab_name = self.tabs[self.active].name.clone();
-                    let node_title = self.tabs[self.active]
-                        .selected_path
-                        .clone()
-                        .unwrap_or_else(|| tr(ui.ctx(), "Selection").to_string());
-                    draw_card(ui, left_rect, !node_focused);
-                    let tree_body = draw_card_header(
-                        ui,
-                        left_rect,
-                        LucideIcon::Braces,
-                        p.blue,
-                        &tab_name,
-                        !node_focused,
-                        p,
-                    );
-                    let mut tree_ui = ui.new_child(
-                        egui::UiBuilder::default()
-                            .max_rect(tree_body)
-                            .layout(egui::Layout::top_down(egui::Align::LEFT)),
-                    );
-                    self.render_tree_card(&mut tree_ui, tree_body, colors);
-
-                    draw_card(ui, right_rect, node_focused);
-                    let node_body = draw_card_header(
-                        ui,
-                        right_rect,
-                        LucideIcon::Route,
-                        p.purple,
-                        &node_title,
-                        node_focused,
-                        p,
-                    );
-                    let mut node_ui = ui.new_child(
-                        egui::UiBuilder::default()
-                            .max_rect(node_body)
-                            .layout(egui::Layout::top_down(egui::Align::LEFT)),
-                    );
-                    // Clicking the title copies the selected node's path.
-                    if let Some(path) = self.tabs[self.active].selected_path.clone() {
-                        let header = egui::Rect::from_min_size(
-                            right_rect.min,
-                            egui::vec2(right_rect.width(), CARD_HEADER_H),
+                    if self.tabs[self.active].parsed.is_none() {
+                        self.node_focused = false;
+                        let tab_name = self.tabs[self.active].name.clone();
+                        draw_card(ui, cards_rect, true);
+                        let tree_body = draw_card_header(
+                            ui,
+                            cards_rect,
+                            LucideIcon::Braces,
+                            p.blue,
+                            &tab_name,
+                            true,
+                            p,
                         );
-                        let resp = ui
-                            .interact(header, egui::Id::new("node_title_copy"), egui::Sense::click())
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .on_hover_text(tr(ui.ctx(), "Click to copy path"));
-                        if resp.clicked() {
-                            if let Ok(mut cb) = arboard::Clipboard::new() {
-                                let _ = cb.set_text(path);
+                        let mut tree_ui = ui.new_child(
+                            egui::UiBuilder::default()
+                                .max_rect(tree_body)
+                                .layout(egui::Layout::top_down(egui::Align::LEFT)),
+                        );
+                        self.render_tree_card(&mut tree_ui, tree_body, colors);
+                    } else {
+                        let (left_rect, right_rect) = split_cards(cards_rect, left_w);
+                        // A click inside a card focuses it.
+                        if let Some(pos) = ui.input(|i| {
+                            i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten()
+                        }) {
+                            if right_rect.contains(pos) {
+                                self.node_focused = true;
+                            } else if left_rect.contains(pos) {
+                                self.node_focused = false;
                             }
-                            let tab = &mut self.tabs[self.active];
-                            tab.copy_notice = Some((
-                                tr(ui.ctx(), "Copied path").to_string(),
-                                std::time::Instant::now(),
-                            ));
-                            tab.copy_notice_in_node = true;
                         }
-                    }
-                    self.tabs[self.active].render_node_card(&mut node_ui, node_body, colors);
+                        let node_focused = self.node_focused;
+                        let tab_name = self.tabs[self.active].name.clone();
+                        let node_title = self.tabs[self.active]
+                            .selected_path
+                            .clone()
+                            .unwrap_or_else(|| tr(ui.ctx(), "Selection").to_string());
+                        draw_card(ui, left_rect, !node_focused);
+                        let tree_body = draw_card_header(
+                            ui,
+                            left_rect,
+                            LucideIcon::Braces,
+                            p.blue,
+                            &tab_name,
+                            !node_focused,
+                            p,
+                        );
+                        let mut tree_ui = ui.new_child(
+                            egui::UiBuilder::default()
+                                .max_rect(tree_body)
+                                .layout(egui::Layout::top_down(egui::Align::LEFT)),
+                        );
+                        self.render_tree_card(&mut tree_ui, tree_body, colors);
 
-                    // Register last so the divider takes priority over both cards.
-                    self.render_split_handle(ui, cards_rect);
+                        draw_card(ui, right_rect, node_focused);
+                        let node_body = draw_card_header(
+                            ui,
+                            right_rect,
+                            LucideIcon::Route,
+                            p.purple,
+                            &node_title,
+                            node_focused,
+                            p,
+                        );
+                        let mut node_ui = ui.new_child(
+                            egui::UiBuilder::default()
+                                .max_rect(node_body)
+                                .layout(egui::Layout::top_down(egui::Align::LEFT)),
+                        );
+                        // Clicking the title copies the selected node's path.
+                        if let Some(path) = self.tabs[self.active].selected_path.clone() {
+                            let header = egui::Rect::from_min_size(
+                                right_rect.min,
+                                egui::vec2(right_rect.width(), CARD_HEADER_H),
+                            );
+                            let resp = ui
+                                .interact(header, egui::Id::new("node_title_copy"), egui::Sense::click())
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .on_hover_text(tr(ui.ctx(), "Click to copy path"));
+                            if resp.clicked() {
+                                if let Ok(mut cb) = arboard::Clipboard::new() {
+                                    let _ = cb.set_text(path);
+                                }
+                                let tab = &mut self.tabs[self.active];
+                                tab.copy_notice = Some((
+                                    tr(ui.ctx(), "Copied path").to_string(),
+                                    std::time::Instant::now(),
+                                ));
+                                tab.copy_notice_in_node = true;
+                            }
+                        }
+                        self.tabs[self.active].render_node_card(&mut node_ui, node_body, colors);
+
+                        // Register last so the divider takes priority over both cards.
+                        self.render_split_handle(ui, cards_rect);
+                    }
                 }
 
                 // Consume the full panel rect so egui doesn't complain
@@ -2393,10 +2415,10 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
             window_drag_area(ui, empty_rect, "sidebar_drag");
         }
 
-        let rows: Vec<(u64, String, bool, bool)> = self
+        let rows: Vec<(u64, String, bool)> = self
             .tabs
             .iter()
-            .map(|tab| (tab.id, tab.name.clone(), tab.pinned, tab.comparison.is_some()))
+            .map(|tab| (tab.id, tab.name.clone(), tab.pinned))
             .collect();
         let active_id = self.tabs[self.active].id;
         let renaming_id = self.renaming.as_ref().map(|rename| rename.id);
@@ -2412,7 +2434,7 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
             .show(&mut list_ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
-                for (index, (id, name, pinned, comparison)) in rows.into_iter().enumerate() {
+                for (index, (id, name, pinned)) in rows.into_iter().enumerate() {
                     if renaming_id == Some(id) {
                         self.rename_row(ui, &mut action);
                     } else {
@@ -2422,7 +2444,6 @@ fn app_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
                             id,
                             &name,
                             pinned,
-                            comparison,
                             id == active_id,
                             reveal && id == active_id,
                             &mut action,
@@ -2718,27 +2739,6 @@ impl JsonTab {
                     });
                 };
                 let Some(parsed) = self.parsed.take() else {
-                    // No valid JSON yet: say what this panel is for and what the app can do.
-                    let ctx = ui.ctx().clone();
-                    intro_panel(
-                        ui,
-                        p,
-                        "features",
-                        "What you can do",
-                        "Once JSON is loaded, select a node on the left to inspect it here.",
-                        &[
-                            IntroRow::action(&ctx, Action::Search),
-                            IntroRow::action(&ctx, Action::Sort),
-                            IntroRow::action(&ctx, Action::Simplify),
-                            IntroRow::action(&ctx, Action::Compare),
-                            IntroRow::action(&ctx, Action::CopyJson),
-                            IntroRow::mouse("Copy a value", false, "Double-click"),
-                            IntroRow::mouse("Copy a key", true, "Click"),
-                            IntroRow::mouse("Edit a value", true, "Double-click"),
-                            IntroRow::tip("Right-click a node for more actions"),
-                            IntroRow::tip("Hover over an image URL or Base64 image to preview it"),
-                        ],
-                    );
                     return;
                 };
                 let Some(path) = self.selected_path.clone() else {
@@ -4440,21 +4440,22 @@ impl JsonViewerApp {
                     });
                     return;
                 }
-                // Nothing loaded yet: explain how to get JSON into the tab.
-                let ctx = ui.ctx().clone();
+                // Nothing loaded yet: show a minimal, box-free welcome view.
+                let rows = [
+                    IntroRow::tip(LucideIcon::Braces, "Paste JSON from the clipboard"),
+                    IntroRow::tip(LucideIcon::Download, "Drop a JSON file onto the window"),
+                    IntroRow::tip(
+                        LucideIcon::ExternalLink,
+                        "Paste a URL or cURL command to load its response",
+                    ),
+                ];
                 intro_panel(
                     ui,
                     p,
-                    "start",
+                    "welcome",
                     "IJson",
                     "A fast, native JSON viewer and editor",
-                    &[
-                        IntroRow { text: "Paste JSON from the clipboard", keys: paste_keys() },
-                        IntroRow::tip("Drop a JSON file onto the window"),
-                        IntroRow::tip("Paste a URL or cURL command to load its response"),
-                        IntroRow::keyed(&ctx, Action::ToggleEditMode, "Type or edit JSON in Edit mode"),
-                        IntroRow::action(&ctx, Action::NewTab),
-                    ],
+                    &rows,
                 );
                 return;
             }
@@ -4518,56 +4519,19 @@ impl JsonViewerApp {
 
 }
 
-/// One line of an intro panel: a description, with the keys that trigger it on the right.
+/// One line of an intro panel: an icon and a short description.
 struct IntroRow {
+    icon: LucideIcon,
     text: &'static str,
-    keys: Vec<String>,
 }
 
 impl IntroRow {
-    fn tip(text: &'static str) -> Self {
-        Self { text, keys: Vec::new() }
-    }
-
-    /// Shows the action's current shortcut, so rebinding it updates the intro too.
-    fn keyed(ctx: &egui::Context, action: Action, text: &'static str) -> Self {
-        let keys = ctx
-            .data(|d| d.get_temp::<Keymap>(egui::Id::new("keymap")))
-            .and_then(|k| k.get(action))
-            .map(|sc| sc.keys())
-            .unwrap_or_default();
-        Self { text, keys }
-    }
-
-    fn action(ctx: &egui::Context, action: Action) -> Self {
-        Self::keyed(ctx, action, action.label())
-    }
-
-    /// A mouse gesture on a tree row, optionally with the command key held.
-    fn mouse(text: &'static str, with_cmd: bool, gesture: &str) -> Self {
-        let mut keys = Vec::new();
-        if with_cmd {
-            keys.push(command_key().to_string());
-        }
-        keys.push(gesture.to_string());
-        Self { text, keys }
+    fn tip(icon: LucideIcon, text: &'static str) -> Self {
+        Self { icon, text }
     }
 }
 
-/// Paste is handled by the system shortcut, not the keymap.
-fn paste_keys() -> Vec<String> {
-    vec![command_key().to_string(), "V".to_string()]
-}
-
-fn command_key() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "⌘"
-    } else {
-        "Ctrl"
-    }
-}
-
-/// Fills an otherwise empty card with a title, a subtitle and a list of hints.
+/// Fills an empty tab with a left-aligned, box-free hero header and borderless hint list.
 fn intro_panel(
     ui: &mut egui::Ui,
     p: UiColors,
@@ -4577,8 +4541,7 @@ fn intro_panel(
     rows: &[IntroRow],
 ) {
     let avail = ui.available_size();
-    let width = (avail.x - 32.0).clamp(160.0, 380.0);
-    // Last frame's height, used to place the block just above the card's middle.
+    let width = (avail.x - 48.0).clamp(200.0, 400.0);
     let height_id = egui::Id::new(("intro_height", salt));
     let last_h = ui.ctx().data(|d| d.get_temp::<f32>(height_id)).unwrap_or(0.0);
 
@@ -4586,93 +4549,95 @@ fn intro_panel(
         .id_salt(("intro_scroll", salt))
         .auto_shrink([false; 2])
         .show(ui, |ui| {
-            ui.add_space(((avail.y - last_h) * 0.4).max(20.0));
+            ui.add_space(((avail.y - last_h) * 0.38).max(28.0));
             let side = ((ui.available_width() - width) * 0.5).max(0.0);
             ui.horizontal(|ui| {
                 ui.add_space(side);
                 let block = ui.vertical(|ui| {
                     ui.set_width(width);
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    ui.label(
-                        egui::RichText::new(tr(ui.ctx(), title))
-                            .size(20.0)
-                            .strong()
-                            .color(p.strong),
-                    );
-                    ui.add_space(4.0);
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(tr(ui.ctx(), subtitle)).size(12.5).color(p.muted),
-                        )
-                        .wrap(),
-                    );
-                    ui.add_space(14.0);
-                    for (i, row) in rows.iter().enumerate() {
-                        if i > 0 {
-                            let top = ui.cursor().top();
-                            ui.painter().hline(
-                                ui.max_rect().x_range(),
-                                top,
-                                egui::Stroke::new(1.0, p.border.gamma_multiply(0.6)),
-                            );
-                        }
+
+                    // Left-aligned hero: app icon on the left, title and subtitle on the right.
+                    egui::Frame::default()
+                        .inner_margin(egui::Margin::symmetric(4, 0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 12.0;
+                                let logo = JsonViewerApp::app_logo_texture(ui.ctx());
+                                let (icon_rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(48.0, 48.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().add(
+                                    egui::epaint::RectShape::filled(
+                                        icon_rect,
+                                        egui::CornerRadius::ZERO,
+                                        egui::Color32::WHITE,
+                                    )
+                                    .with_texture(
+                                        logo.id(),
+                                        egui::Rect::from_min_max(
+                                            egui::pos2(0.0, 0.0),
+                                            egui::pos2(1.0, 1.0),
+                                        ),
+                                    ),
+                                );
+                                ui.vertical(|ui| {
+                                    ui.spacing_mut().item_spacing.y = 0.0;
+                                    ui.add_space(2.0);
+                                    ui.label(
+                                        egui::RichText::new(tr(ui.ctx(), title))
+                                            .size(22.0)
+                                            .strong()
+                                            .color(p.strong),
+                                    );
+                                    ui.add_space(3.0);
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(tr(ui.ctx(), subtitle))
+                                                .size(13.0)
+                                                .color(p.muted),
+                                        )
+                                        .wrap(),
+                                    );
+                                });
+                            });
+                        });
+
+                    ui.add_space(22.0);
+
+                    // Open, borderless hint list.
+                    for row in rows {
                         intro_row(ui, p, row);
                     }
                 });
                 ui.ctx()
                     .data_mut(|d| d.insert_temp(height_id, block.response.rect.height()));
             });
-            ui.add_space(20.0);
+            ui.add_space(28.0);
         });
 }
 
 fn intro_row(ui: &mut egui::Ui, p: UiColors, row: &IntroRow) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), 32.0),
-        egui::Layout::right_to_left(egui::Align::Center),
-        |ui| {
-            ui.set_min_height(32.0);
-            ui.spacing_mut().item_spacing.x = 4.0;
-            for key in row.keys.iter().rev() {
-                keycap(ui, p, key);
-            }
-            if !row.keys.is_empty() {
-                ui.add_space(8.0);
-            }
-            // The description takes the rest of the row and wraps when the card is narrow.
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+    egui::Frame::default()
+        .inner_margin(egui::Margin::symmetric(4, 10))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.set_min_height(22.0);
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let (icon_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(15.0, 15.0), egui::Sense::hover());
+                draw_lucide_icon(ui.painter(), icon_rect, row.icon, p.muted);
                 ui.add(
                     egui::Label::new(
-                        egui::RichText::new(tr(ui.ctx(), row.text)).size(13.0).color(p.text),
+                        egui::RichText::new(tr(ui.ctx(), row.text))
+                            .size(13.0)
+                            .color(p.text),
                     )
                     .wrap(),
                 );
             });
-        },
-    );
-}
-
-/// A single key drawn as a keycap, matching the shortcut settings panel.
-fn keycap(ui: &mut egui::Ui, p: UiColors, key: &str) {
-    // Key names stay as they are; gestures such as "Double-click" are translated.
-    let label = tr(ui.ctx(), key).to_owned();
-    let galley = ui.painter().layout_no_wrap(label, egui::FontId::proportional(12.0), p.text);
-    let w = (galley.size().x + 10.0).max(22.0);
-    let (cap, _) = ui.allocate_exact_size(egui::vec2(w, 22.0), egui::Sense::hover());
-    // Slightly deeper bottom edge reads as a key.
-    ui.painter().rect_filled(
-        cap.translate(egui::vec2(0.0, 1.0)),
-        egui::CornerRadius::same(5),
-        p.border,
-    );
-    ui.painter().rect(
-        cap,
-        egui::CornerRadius::same(5),
-        p.subtle,
-        egui::Stroke::new(1.0, p.border),
-        egui::StrokeKind::Inside,
-    );
-    ui.painter().galley(cap.center() - galley.size() * 0.5, galley, p.text);
+        });
 }
 
 /// Per-panel state for a scrollable JSON tree. Both View-mode panels use this so
@@ -5066,7 +5031,6 @@ fn tab_row(
     id: u64,
     name: &str,
     pinned: bool,
-    comparison: bool,
     active: bool,
     reveal: bool,
     action: &mut RailAction,
@@ -5096,17 +5060,7 @@ fn tab_row(
 
     let show_actions = active || resp.hovered();
     let icon = 14.0;
-    let mut text_left = rect.left() + 12.0;
-    if comparison {
-        let cmp_icon_size = 13.0;
-        let cmp_rect = egui::Rect::from_center_size(
-            egui::pos2(text_left + cmp_icon_size * 0.5, rect.center().y),
-            egui::vec2(cmp_icon_size, cmp_icon_size),
-        );
-        let cmp_color = if active { p.strong } else { p.muted };
-        draw_lucide_icon(ui.painter(), cmp_rect, LucideIcon::Columns2, cmp_color);
-        text_left += cmp_icon_size + 6.0;
-    }
+    let text_left = rect.left() + 12.0;
     let pointer = resp.hover_pos().or(resp.interact_pointer_pos());
     let close_rect = egui::Rect::from_center_size(
         egui::pos2(rect.right() - 8.0 - icon * 0.5, rect.center().y),
@@ -5408,16 +5362,22 @@ mod intro_tests {
         for _ in 0..2 {
             let _ = ctx.run(input.clone(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
+                    let p = UiColors::current(ui);
+                    let rows = [
+                        IntroRow::tip(LucideIcon::Braces, "Paste JSON from the clipboard"),
+                        IntroRow::tip(LucideIcon::Download, "Drop a JSON file onto the window"),
+                        IntroRow::tip(
+                            LucideIcon::ExternalLink,
+                            "Paste a URL or cURL command to load its response",
+                        ),
+                    ];
                     intro_panel(
                         ui,
-                        UiColors::current(ui),
+                        p,
                         "test",
                         "IJson",
                         "A fast, native JSON viewer and editor",
-                        &[
-                            IntroRow { text: "Paste JSON from the clipboard", keys: paste_keys() },
-                            IntroRow::tip("Paste a URL or cURL command to load its response"),
-                        ],
+                        &rows,
                     );
                 });
             });
@@ -5427,10 +5387,10 @@ mod intro_tests {
 
     #[test]
     fn intro_fits_wide_and_narrow_cards() {
-        // Title + subtitle + two 32pt rows; a narrow card may wrap onto extra lines.
+        // Horizontal logo+title header + 3 borderless rows; narrow cards wrap onto extra lines.
         let wide = intro_height(egui::vec2(700.0, 500.0));
-        assert!((100.0..150.0).contains(&wide), "wide: {wide}");
-        let narrow = intro_height(egui::vec2(240.0, 500.0));
-        assert!((wide..220.0).contains(&narrow), "narrow: {narrow}");
+        assert!((160.0..260.0).contains(&wide), "wide: {wide}");
+        let narrow = intro_height(egui::vec2(260.0, 500.0));
+        assert!(narrow >= wide && narrow < 380.0, "narrow: {narrow}, wide: {wide}");
     }
 }

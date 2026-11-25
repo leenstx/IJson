@@ -201,6 +201,7 @@ impl Language {
             "Click to copy path" => "点击复制路径",
             "Copied path" => "已复制路径",
             "What you can do" => "功能一览",
+            "Get started" => "快速开始",
             "Once JSON is loaded, select a node on the left to inspect it here." => "加载 JSON 后，在左侧选择节点即可在此查看。",
             "Copy a value" => "复制值",
             "Copy a key" => "复制键名",

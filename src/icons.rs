@@ -26,6 +26,7 @@ pub(crate) enum LucideIcon {
     Search,
     Key,
     Braces,
+    Brackets,
     Type,
     Route,
     ChevronsDown,
@@ -254,6 +255,10 @@ fn icon_elements(icon: LucideIcon) -> &'static [LucideElem] {
         LucideIcon::Braces => &[
             LucideElem::Path("M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"),
             LucideElem::Path("M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"),
+        ],
+        LucideIcon::Brackets => &[
+            LucideElem::Path("M16 3h2a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1h-2"),
+            LucideElem::Path("M8 21H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h2"),
         ],
         LucideIcon::Type => &[
             LucideElem::Path("M12 4v16"),
@@ -650,6 +655,7 @@ mod tests {
             LucideIcon::TextAlignJustifyStart,
             LucideIcon::ListTree,
             LucideIcon::TextPen,
+            LucideIcon::Brackets,
         ] {
             for elem in icon_elements(icon) {
                 if let LucideElem::Path(d) = elem {

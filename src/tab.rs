@@ -982,22 +982,93 @@ pub(crate) fn tab_from_value(v: &Value, fallback_id: u64) -> Option<LoadedTab> {
     })
 }
 
-pub(crate) fn unique_tab_name(existing: &[JsonTab], base: &str) -> String {
-    if !existing.iter().any(|tab| tab.name == base) {
-        return base.to_string();
-    }
-    let mut n = 2u32;
+pub(crate) fn next_day_tab_name(existing: &[JsonTab]) -> String {
+    next_day_tab_name_for_day(existing, &local_day_now())
+}
+
+pub(crate) fn next_compare_tab_name(existing: &[JsonTab]) -> String {
+    next_compare_tab_name_for_day(existing, &local_day_now())
+}
+
+fn next_compare_tab_name_for_day(existing: &[JsonTab], day: &str) -> String {
+    let prefix = format!("{day}.");
+    let max_num = existing
+        .iter()
+        .filter_map(|tab| {
+            let from_name = tab.name.strip_prefix(&prefix).and_then(parse_roman_lower);
+            let from_auto = tab
+                .auto_name
+                .strip_prefix(&prefix)
+                .and_then(parse_roman_lower);
+            from_name.max(from_auto)
+        })
+        .max()
+        .unwrap_or(0);
+    let mut n = max_num.saturating_add(1);
     loop {
-        let candidate = format!("{base} {n}");
+        let candidate = format!("{day}.{}", to_roman_lower(n));
         if !existing.iter().any(|tab| tab.name == candidate) {
             return candidate;
         }
-        n += 1;
+        n = n.saturating_add(1);
     }
 }
 
-pub(crate) fn next_day_tab_name(existing: &[JsonTab]) -> String {
-    next_day_tab_name_for_day(existing, &local_day_now())
+fn to_roman_lower(mut n: u32) -> String {
+    const TABLE: &[(u32, &str)] = &[
+        (1000, "m"),
+        (900, "cm"),
+        (500, "d"),
+        (400, "cd"),
+        (100, "c"),
+        (90, "xc"),
+        (50, "l"),
+        (40, "xl"),
+        (10, "x"),
+        (9, "ix"),
+        (5, "v"),
+        (4, "iv"),
+        (1, "i"),
+    ];
+    let mut out = String::new();
+    for &(val, sym) in TABLE {
+        while n >= val {
+            out.push_str(sym);
+            n -= val;
+        }
+    }
+    out
+}
+
+fn parse_roman_lower(s: &str) -> Option<u32> {
+    if s.is_empty() {
+        return None;
+    }
+    let mut total = 0u32;
+    let mut prev = 0u32;
+    for b in s.bytes().rev() {
+        let v = match b {
+            b'i' => 1,
+            b'v' => 5,
+            b'x' => 10,
+            b'l' => 50,
+            b'c' => 100,
+            b'd' => 500,
+            b'm' => 1000,
+            _ => return None,
+        };
+        if v < prev {
+            total = total.checked_sub(v)?;
+        } else {
+            total = total.checked_add(v)?;
+            prev = v;
+        }
+    }
+    if total > 0 && to_roman_lower(total) == s {
+        Some(total)
+    } else {
+        None
+    }
 }
 
 fn next_day_tab_name_for_day(existing: &[JsonTab], day: &str) -> String {
@@ -1167,7 +1238,10 @@ pub(crate) fn editable_to_string(s: &str) -> String {
 
 #[cfg(test)]
 mod edit_string_tests {
-    use super::{editable_to_string, next_day_tab_name_for_day, string_to_editable, JsonTab};
+    use super::{
+        editable_to_string, next_compare_tab_name_for_day, next_day_tab_name_for_day,
+        string_to_editable, JsonTab,
+    };
     use crate::model::Indentation;
 
     #[test]
@@ -1182,6 +1256,22 @@ mod edit_string_tests {
         assert_eq!(next_day_tab_name_for_day(&tabs, "24"), "24.003");
         // New day starts back at .001
         assert_eq!(next_day_tab_name_for_day(&tabs, "25"), "25.001");
+    }
+
+    #[test]
+    fn compare_tab_names_increment_in_roman_numerals() {
+        let mut tabs = Vec::new();
+        tabs.push(JsonTab::empty(1, "24.001".to_string(), Indentation::default()));
+        assert_eq!(next_compare_tab_name_for_day(&tabs, "24"), "24.i");
+        tabs.push(JsonTab::empty(2, "24.i".to_string(), Indentation::default()));
+        assert_eq!(next_compare_tab_name_for_day(&tabs, "24"), "24.ii");
+        tabs.push(JsonTab::empty(3, "24.ii".to_string(), Indentation::default()));
+        assert_eq!(next_compare_tab_name_for_day(&tabs, "24"), "24.iii");
+        let mut renamed = JsonTab::empty(4, "24.iii".to_string(), Indentation::default());
+        renamed.name = "diff".to_string();
+        tabs.push(renamed);
+        assert_eq!(next_compare_tab_name_for_day(&tabs, "24"), "24.iv");
+        assert_eq!(next_compare_tab_name_for_day(&tabs, "25"), "25.i");
     }
 
     #[test]

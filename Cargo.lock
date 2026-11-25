@@ -1729,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "json-viewer"
-version = "0.0.17"
+version = "0.0.18"
 dependencies = [
  "ab_glyph",
  "arboard",
@@ -1737,7 +1737,9 @@ dependencies = [
  "eframe",
  "fontdb",
  "image",
+ "objc2 0.5.2",
  "png 0.17.16",
+ "raw-window-handle",
  "rfd",
  "serde",
  "serde_json",
